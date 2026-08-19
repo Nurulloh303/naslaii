@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Maxfiy ma'lumotlar. .env.example git'da qoladi, .env — hech qachon.
+# Bu yerda OpenAI kaliti, Telegram bot tokeni va DJANGO_SECRET_KEY yotadi.
+.env
+.env.*
+!.env.example
+
+# Ma'lumotlar bazasi va foydalanuvchi fayllari
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+
+# Loglar
+*.log
+
+# Muharrir va OS fayllari
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
