@@ -49,8 +49,11 @@ Faervol. **`OpenSSH` ni birinchi ruxsat bering**, aks holda o'zingizni
 serverdan qulflab qo'yasiz:
 
 ```bash
-ufw allow OpenSSH && ufw allow 'Nginx Full' && ufw --force enable
+ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable
 ```
+
+Port raqamlari bilan, `'Nginx Full'` profili bilan emas: u profil nginx
+o'rnatilgandan keyin paydo bo'ladi, hozir esa buyruq xato beradi.
 
 Bundan keyin `nurulloh` sifatida kiring: `ssh nurulloh@NASLAI_IP`
 
@@ -73,6 +76,30 @@ sudo ss -lntp | grep 6379
 Chiqishda `127.0.0.1:6379` bo'lishi kerak. Agar `0.0.0.0:6379` bo'lsa,
 `/etc/redis/redis.conf` da `bind 127.0.0.1 -::1` qiling va
 `sudo systemctl restart redis-server` bajaring.
+
+---
+
+## 2b. Swap — 1 GB serverda majburiy
+
+1 GB xotirada Django, Pillow, Redis va nginx birgalikda chegaraga tegib
+turadi. Swap bo'lmasa tizim jarayonlarni ogohlantirmasdan o'ldiradi, va bu
+odatda generatsiya o'rtasida sodir bo'ladi.
+
+```bash
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+```
+
+Qayta yuklangandan keyin ham qolishi uchun:
+
+```bash
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
+Tekshirish — `Swap:` qatorida 2.0Gi ko'rinsin:
+
+```bash
+free -h
+```
 
 ---
 
@@ -200,10 +227,12 @@ User=nurulloh
 Group=www-data
 WorkingDirectory=/srv/naslai
 EnvironmentFile=/etc/naslai/naslai.env
+# --workers: 1 GB / 1 yadroli server uchun 2. Har biri Django va Pillow'ni
+#   xotiraga yuklaydi (~150 MB). Kattaroq serverda (2 yadro, 4 GB) 4 qiling.
 # --timeout 300: haqiqiy generatsiya uch daqiqagacha davom etadi.
-# Pasaytirsangiz, systemd to'langan so'rovni o'rtasida uzib qo'yadi.
+#   Pasaytirsangiz, systemd to'langan so'rovni o'rtasida uzib qo'yadi.
 ExecStart=/srv/naslai/.venv/bin/gunicorn config.wsgi:application \
-          --bind 127.0.0.1:8787 --workers 3 --timeout 300
+          --bind 127.0.0.1:8787 --workers 2 --timeout 300
 Restart=always
 RestartSec=5
 
@@ -251,11 +280,12 @@ WorkingDirectory=/srv/naslai
 EnvironmentFile=/etc/naslai/naslai.env
 # --concurrency: bir vaqtda nechta generatsiya. Har bir jarayon Django va
 #   Pillow'ni xotiraga yuklaydi (~150 MB), shuning uchun oshirib
-#   yubormang. 1 GB droplet uchun 2 dan oshmasin.
+#   yubormang. 1 GB serverda 1, 2 GB da 2. Generatsiya CPU emas,
+#   kutish ishi — 1 yadroda ham navbat yaxshi ketadi.
 # --max-tasks-per-child: Pillow xotirani sekin oqizadi, jarayon vaqti-vaqti
 #   bilan yangilanib tursin.
 ExecStart=/srv/naslai/.venv/bin/celery -A config worker \
-          --loglevel=info --concurrency=2 --max-tasks-per-child=20
+          --loglevel=info --concurrency=1 --max-tasks-per-child=10
 Restart=always
 RestartSec=5
 
@@ -518,7 +548,7 @@ Lekin sabab logda qoladi, o'sha yerdan qidiring.
 
 ### Bir vaqtda nechta generatsiya ketadi
 
-Celery worker `--concurrency=2` bilan ishlaydi — bir vaqtda ikkita rasm
+Celery worker `--concurrency=1` bilan ishlaydi — bir vaqtda bitta rasm
 chiziladi, qolganlari navbatda kutadi. Sayt esa **hech qachon
 sekinlashmaydi**: gunicorn faqat javob beradi, kutish worker tomonda.
 

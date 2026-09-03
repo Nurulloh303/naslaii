@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from .infographic_rules import first_page_text_rules, rank_callouts, to_headline
+from .slide_types import SLIDE_TYPE_IDS, package_slides, slide_focus, slide_types_for
 
 INFOGRAPHIC_LANGUAGES = ("uz", "ru", "tg")
 LANGUAGE_HINTS = {
@@ -180,9 +181,14 @@ def subtitle_rule(brief: dict, settings: dict) -> str:
     if text["subtitle"]:
         return f"- Subtitle: {text_for_card(settings, text['subtitle'])} — one short line under the headline, in {hint}.\n- {BANNED_SUBTITLES}"
     return (
-        f"- Write the subtitle yourself: one short qualifier in {hint} taken from THIS product's name, type or "
-        f'category — what kind it is, who it is for, what it is made of, or where it is used ("для автомобиля", '
-        f'"светодиодная", "школьный", "пищевая добавка"). Two or three words maximum.\n- {BANNED_SUBTITLES}'
+        f"- Write the subtitle yourself: one short qualifier in {hint} — a specific subtype, material, audience or "
+        f'use-case ("для автомобиля", "светодиодная", "школьный", "пищевая добавка", "беспроводные"). Two or three '
+        f'words maximum.\n'
+        f'- Never just restate the product\'s own category or type as the subtitle (e.g. do not write "электроника" '
+        f'under a headline that already says "наушники", or "аксессуар" under a bag, or "obuv" under shoes) — that '
+        f'repeats what the headline already says instead of adding real information. If you cannot think of a '
+        f'genuinely specific qualifier, leave the subtitle empty rather than echo the category.\n'
+        f'- {BANNED_SUBTITLES}'
     )
 
 
@@ -327,6 +333,13 @@ def style_copy_prompt(brief: dict, settings: dict, variant: int) -> str:
             "- Keep the SAME number of text blocks and badges, in the SAME positions, with the same alignment, "
             "order and relative size as in IMAGE 1.\n"
             "- Keep the SAME background, gradients, decorative shapes, lines, icons, panels and their colours.\n"
+            "- EXCEPTION — floating props tied to the REFERENCE product (food items, ingredients, flavour cues, "
+            "tools or objects that belong to IMAGE 1's product but not to yours: coffee beans for a coffee "
+            "product, fruit slices for a flavoured product, etc.): do NOT copy those specific objects as-is. "
+            "Replace each one with a prop that actually fits the product from IMAGE 2 (or simply drop it if "
+            "nothing relevant fits), keeping the same position, scale and rendering style as the original prop. "
+            "Purely abstract decoration (gradients, geometric shapes, lines, panels, glow) is not affected by "
+            "this exception and must be copied exactly.\n"
             "- Keep the SAME typography: weights, letter case, line breaks and the size relation between "
             "headline, subtitle and badges.\n"
             "- Keep the product in the SAME place, at the same scale, angle and crop as the product in IMAGE 1.\n"
@@ -344,9 +357,16 @@ def style_copy_prompt(brief: dict, settings: dict, variant: int) -> str:
             "- Keep the SAME weight contrast: heavy display face for the headline, thin small caps for secondary "
             "lines. Do not set everything in one weight.\n"
             "- Keep the SAME letter case per block, the SAME bold accents inside captions, and the SAME small "
-            'marks ("+", "x30", "%", leader lines from a badge to a point on the product).\n'
+            'marks ("+18", "x30", "%", leader lines from a badge to a point on the product) — this does NOT '
+            "cover empty placeholder panels, see the rule right below.\n"
             "- If your word is longer or shorter than the reference word, change the font size so the block keeps "
-            "the same visual mass and the same footprint."
+            "the same visual mass and the same footprint.\n"
+            "- EMPTY IMAGE SLOTS: if IMAGE 1 has a plain-coloured rounded panel that is clearly a leftover "
+            '"add a photo here" placeholder from the template (an empty box, sometimes with a small "+" or '
+            "camera icon floating inside it, holding no real content) — do NOT reproduce it as an empty box. "
+            "Either fill it with a second believable crop, angle or close-up detail of the product from IMAGE 2, "
+            "or remove the panel entirely and let the background/decoration continue in its place. A blank box "
+            'with a floating "+" reads as broken, not designed.'
         )
     )
     callouts_line = (
@@ -496,11 +516,19 @@ def marketplace_package_prompt(settings: dict, slide_index: int) -> str:
     package = settings.get("marketplacePackage") or {}
     platform = marketplace_name(settings)
     hint = language_hint(settings)
-    focus = MARKETPLACE_PACKAGE_SLIDES[slide_index % len(MARKETPLACE_PACKAGE_SLIDES)]
+    # Тему слайда выбирает продавец. Не выбрал — идём нашим порядком:
+    # сначала витрина, потом преимущества, потом детали.
+    chosen = slide_types_for(settings)
+    focus = (
+        slide_focus(chosen[slide_index])
+        if slide_index < len(chosen)
+        else MARKETPLACE_PACKAGE_SLIDES[slide_index % len(MARKETPLACE_PACKAGE_SLIDES)]
+    )
+    total = package_slides(settings, len(MARKETPLACE_PACKAGE_SLIDES))
     description = package.get("productDescription") or "(mahsulot tavsifi berilmagan, fotosuratdan aniq ko‘rinadigan narsalarga tayanib qoling)"
     style_notes = package.get("styleNotes")
 
-    return f"""Create one slide ({slide_index + 1} of 5) of a vertical 1080x1440 {platform} marketplace infographic package, all 5 slides sharing one consistent visual style.
+    return f"""Create one slide ({slide_index + 1} of {total}) of a vertical 1080x1440 {platform} marketplace infographic package, all {total} slides sharing one consistent visual style.
 Slide focus: {focus}
 Product description and benefits: {description}
 {f"Style notes: {style_notes}" if style_notes else ""}
@@ -510,7 +538,7 @@ The description above may be written in another language: translate everything i
 {NO_MARKETPLACE_BRANDING}
 {BANNED_WORDS}
 Do not invent discounts, prices, medical claims, certifications or guarantees not visible in the photo.
-Premium commercial quality, consistent accent color and typography across the whole 5-slide set."""
+Premium commercial quality, consistent accent color and typography across the whole {total}-slide set."""
 
 
 def compact_prompt(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
@@ -562,9 +590,80 @@ Clean commercial layout. Accent colour taken from the product itself.
 Variant {variant}."""
 
 
+def rerender_rules(settings: dict, variant: int) -> str:
+    """Добавка для перерисовки одного кадра.
+
+    Повторять ту же картинку бессмысленно: второй токен человек заплатил
+    именно потому, что первая не подошла. Просим заметно поменять
+    раскладку — но не товар, не текст и не стиль, иначе кадр выпадет из
+    набора.
+    """
+    counts = settings.get("regenerateCount") or {}
+    attempt = int(counts.get(str(variant), counts.get(variant, 0)) or 0)
+    notes = settings.get("slideNotes") or {}
+    wish = str(notes.get(str(variant), notes.get(variant, "")) or "").strip()
+
+    extra = ""
+    if attempt > 1:
+        extra += (
+            f"\n\nRE-RENDER — the seller rejected {attempt - 1} previous version(s) of this exact slide. "
+            "Change the composition, camera angle, product placement and accent shapes noticeably. "
+            "Do NOT change the product, the words on the card, the language or the overall style: "
+            "the slide must still belong to the same set."
+        )
+    if wish:
+        extra += (
+            "\n\nSELLER'S FIX FOR THIS SLIDE — highest priority, apply it and keep everything else "
+            f'as described above: "{wish}"'
+        )
+    return extra
+
+
+def clean_background_prompt(brief: dict, settings: dict, variant: int) -> str:
+    """Фон без единой буквы.
+
+    Модель рисует только товар и сцену, а надписи накладываются поверх
+    настоящим шрифтом (см. drawTextLayer на клиенте). Кривые буквы,
+    ошибки в словах и сломанные ў/қ так исчезают совсем.
+
+    Прямо просим оставить место сверху и снизу: иначе товар встаёт по
+    центру во весь кадр и заголовок ложится ему на лицо.
+    """
+    platform = marketplace_name(settings)
+    category = brief.get("category") or "Marketplace kategoriyasi"
+    focus = (
+        slide_focus(slide_types_for(settings)[variant - 1])
+        if settings.get("contentType") == "marketplacePackage" and len(slide_types_for(settings)) >= variant
+        else "the product itself, big and clear"
+    )
+    return f"""Edit the first input image into a clean vertical 1080x1440 background plate for a {platform} marketplace card.
+Preserve the product identity, real shape, colour, proportions, material appearance and visible details from the uploaded photo.
+Product: {brief.get("title") or "mahsulot"}
+Category: {category}
+Slide focus: {focus}
+
+ABSOLUTELY NO TEXT. This is the most important rule of this task:
+- Do not write any headline, subtitle, caption, badge, label, price, percentage, sticker, watermark, sign or logo.
+- Do not draw letters, digits or punctuation anywhere in the scene, not even small, blurred or decorative ones.
+- Do not draw empty badge shapes or pill outlines waiting to be filled: the text layer is added later and must not collide with them.
+- The ONLY writing allowed is the text physically printed on the product or its package in the uploaded photo. Keep that sharp and unchanged.
+
+LEAVE ROOM FOR THE TEXT LAYER:
+- Keep the top 28% of the frame calm: smooth background, no product parts, no busy texture. A large headline goes there.
+- Keep the bottom 18% of the frame calm in the same way: small badges go there.
+- Place the product in the middle band, large and fully inside the frame.
+- Keep the contrast even in those two calm areas so text stays readable without an extra shadow.
+
+{NO_MARKETPLACE_BRANDING}
+Photorealistic, sharp, premium commercial quality. Variant {variant}: change the camera angle and the light, keep the same product."""
+
 def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
     """Главная точка входа: какой промпт нужен для этой задачи."""
     content_type = settings.get("contentType", "card")
+    # Свой текст несовместим с копией референса: там весь смысл в том,
+    # чтобы повторить чужую типографику.
+    if settings.get("textMode") == "own" and not has_reference and content_type != "fashion":
+        return clean_background_prompt(brief, settings, variant)
     if has_reference and content_type in ("card", "copyStyle"):
         prompt = style_copy_prompt(brief, settings, variant)
     elif content_type == "fashion":
@@ -574,9 +673,11 @@ def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool)
     else:
         prompt = generation_prompt(brief, settings, variant)
 
+    fix = rerender_rules(settings, variant)
+
     pages = int(settings.get("pages") or 1)
     if pages <= 1 or content_type == "marketplacePackage":
-        return prompt
+        return prompt + fix
 
     variants = int(settings.get("variants") or 1)
     page_index = (variant - 1) // max(1, variants)
@@ -592,9 +693,16 @@ def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool)
         if focus:
             extra += f" Change only the emphasised benefit: {focus}"
     else:
-        extra = f"\n\nThis is page {page_index + 1} of {pages} in a set that must share ONE consistent visual style."
-        if focus:
-            extra += f" This page must emphasise: {focus}"
-        extra += " Vary the composition between pages."
+        # Без явного акцента "поменяй композицию" — слишком общая просьба,
+        # модель часто просто повторяет тот же кадр близко к оригиналу.
+        # Даём конкретный фокус по кругу из той же системы типов, что и в
+        # пакете маркетплейса — вторая страница гарантированно про другое.
+        auto_focus = slide_focus(SLIDE_TYPE_IDS[page_index % len(SLIDE_TYPE_IDS)])
+        extra = (
+            f"\n\nThis is page {page_index + 1} of {pages} in a set that must share ONE consistent visual style. "
+            f"This page must look CLEARLY DIFFERENT from the other pages — different composition, different crop "
+            f"or angle of the product, different supporting elements.\n"
+            f"Page focus: {focus or auto_focus}."
+        )
 
-    return prompt + extra
+    return prompt + extra + fix

@@ -102,11 +102,16 @@ def token_packs() -> list[dict]:
     ]
 
 
+from generation import slide_types as _slides
+from generation.slide_types import package_slides
+
 # Одна картинка — один токен. Одинаково для всех режимов, поэтому маржа
 # везде совпадает и её не нужно пересчитывать под каждую операцию.
 TOKENS_PER_IMAGE = 1
 
 MARKETPLACE_PACKAGE_VARIANTS = 5
+MIN_PACKAGE_SLIDES = _slides.MIN_PACKAGE_SLIDES
+MAX_PACKAGE_SLIDES = _slides.MAX_PACKAGE_SLIDES
 
 # Видео пока не подключено. Коэффициенты временные: поставщика нет,
 # значит и себестоимость неизвестна.
@@ -125,9 +130,13 @@ STARTER_TOKENS_UNVERIFIED = _env_int("STARTER_TOKENS_UNVERIFIED", 0)
 
 
 def total_renders(settings: dict) -> int:
-    """Сколько картинок будет создано: варианты × страницы."""
+    """Сколько картинок будет создано: варианты × страницы.
+
+    В пакете картинка — это слайд, и их число выбирает продавец
+    (3-8). Старый клиент поля не присылает — остаётся прежняя пятёрка.
+    """
     if settings.get("contentType") == "marketplacePackage":
-        return MARKETPLACE_PACKAGE_VARIANTS
+        return package_slides(settings, MARKETPLACE_PACKAGE_VARIANTS)
     variants = int(settings.get("variants") or 1)
     pages = int(settings.get("pages") or 1)
     return variants * pages
@@ -152,7 +161,7 @@ def quote_for(settings: dict) -> dict:
     size = f"{FIXED_IMAGE_SIZE['width']}x{FIXED_IMAGE_SIZE['height']}"
 
     if content_type == "marketplacePackage":
-        label = f"{MARKETPLACE_PACKAGE_VARIANTS} slayd · {platform} · {size}"
+        label = f"{images} slayd · {platform} · {size}"
     else:
         pages = int(settings.get("pages") or 1)
         page_note = f" · {pages} sahifa" if pages > 1 else ""
@@ -171,8 +180,9 @@ def public_pricing() -> dict:
     return {
         "perImage": TOKENS_PER_IMAGE,
         "marketplacePackage": {
-            "flat": MARKETPLACE_PACKAGE_VARIANTS * TOKENS_PER_IMAGE,
-            "slides": MARKETPLACE_PACKAGE_VARIANTS,
+            "perSlide": TOKENS_PER_IMAGE,
+            "min": MIN_PACKAGE_SLIDES,
+            "max": MAX_PACKAGE_SLIDES,
         },
         "video": {str(k): v for k, v in VIDEO_TOKEN_MULTIPLIER.items()},
         "tokenPriceUzs": packs[0]["perToken"],

@@ -1,19 +1,28 @@
+import io
 import os
 import re
+import zipfile
+from urllib.parse import quote, unquote
+
+from django.conf import settings as django_settings
+from django.core.files.storage import default_storage
+from django.http import HttpResponse
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 import logging
 
-from billing.pricing import quote_for
+from billing.pricing import TOKENS_PER_IMAGE, quote_for
 from billing.services import InsufficientBalance, debit, refund
 from config.throttling import AnalyzeThrottle, GenerationThrottle
 
 from .analyze import analyze_image
 from .models import GenerationJob
+from .providers import get_provider
+from .style_templates import load_style_templates, resolve_style_template_path, style_template_mime
 from .tasks import enqueue
 from .serializers import (
     GenerationCreateSerializer,
@@ -203,25 +212,134 @@ def projects_list(request):
     return Response({"projects": [project_payload(job, request) for job in jobs]})
 
 
-@api_view(["DELETE"])
-@permission_classes([IsAuthenticated])
-def delete_project(request, pk: int):
-    """Удаление проекта из кабинета.
+def _brief_text_file(job) -> str:
+    """Бриф текстом — чтобы папка была понятна и без нашего сайта."""
+    lines = [job.title or "Mahsulot"]
+    if job.subtitle:
+        lines.append(f"Subtitr: {job.subtitle}")
+    if job.category:
+        lines.append(f"Kategoriya: {job.category}")
+    lines += ["", "AFZALLIKLAR:"]
+    lines += [f"- {item}" for item in (job.benefits or []) if item]
+    plan = (job.settings or {}).get("plan") or []
+    if plan:
+        lines += ["", "SLAYDLARDAGI MATN:"]
+        for index, slide in enumerate(plan):
+            head = slide.get("headline", "")
+            sub = slide.get("subtitle", "")
+            lines.append(f"{index + 1}. {head}" + (f" — {sub}" if sub else ""))
+            for line in slide.get("lines") or []:
+                lines.append(f"   · {line}")
+    lines += ["", f"Naslai · {job.created_at.date().isoformat()}"]
+    return "\n".join(lines)
 
-    Фильтр по пользователю обязателен: без него чужой проект удаляется по
-    одному лишь номеру.
+
+@api_view(["GET", "DELETE"])
+@permission_classes([IsAuthenticated])
+def project_detail(request, pk: int):
+    """Loyiha — bitta papka sifatida (GET) yoki o'chirish (DELETE).
+
+    Фильтр по пользователю обязателен: без него чужой проект открывается
+    или удаляется по одному лишь номеру.
     """
     job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
     if job is None:
         return Response({"error": "PROJECT_NOT_FOUND", "message": "Loyiha topilmadi"}, status=404)
-    if job.status in {"queued", "processing"} and not job.cancelled:
-        return Response(
-            {"error": "PROJECT_RUNNING", "message": "Vazifa hali bajarilmoqda. Avval uni bekor qiling."},
-            status=409,
-        )
-    job.delete()
-    remaining = GenerationJob.objects.filter(user=request.user)
-    return Response({"ok": True, "projects": [project_payload(item, request) for item in remaining]})
+
+    if request.method == "DELETE":
+        if job.status in {"queued", "processing"} and not job.cancelled:
+            return Response(
+                {"error": "PROJECT_RUNNING", "message": "Vazifa hali bajarilmoqda. Avval uni bekor qiling."},
+                status=409,
+            )
+        job.delete()
+        remaining = GenerationJob.objects.filter(user=request.user)
+        return Response({"ok": True, "projects": [project_payload(item, request) for item in remaining]})
+
+    # GET: bриф, matn rejasi, sozlamalar va barcha rasmlar bitta joyda —
+    # loyihani qayta ochganda odam nimadan yig'ilganini yana ko'radi.
+    data = job_payload(job, request)
+    data["archiveUrl"] = f"/api/projects/{job.pk}/archive.zip"
+    data["brief"] = {
+        "title": job.title,
+        "subtitle": job.subtitle,
+        "category": job.category,
+        "benefits": [b for b in (job.benefits or []) if b],
+    }
+    data["plan"] = (job.settings or {}).get("plan") or []
+    data["listing"] = (job.settings or {}).get("listing")
+    return Response({"project": data})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def project_archive(request, pk: int):
+    """Vazifaning barcha rasmlari bitta arxivda.
+
+    Nomlar raqamlangan: marketplace rasmlarni fayl nomi tartibida yuklaydi,
+    raqamsiz slaydlar aralashib ketadi.
+    """
+    job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
+    if job is None or job.status != "success":
+        return Response({"error": "PROJECT_NOT_FOUND", "message": "Loyiha topilmadi"}, status=404)
+
+    slide_types = (job.settings or {}).get("slideTypes") or []
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for index, result in enumerate(job.results or []):
+            url = str(result.get("url") or "")
+            relative = url.replace(django_settings.MEDIA_URL, "", 1).lstrip("/")
+            if not default_storage.exists(relative):
+                continue
+            label = slide_types[index] if index < len(slide_types) else f"slayd-{index + 1}"
+            extension = relative.rsplit(".", 1)[-1] if "." in relative else "jpg"
+            with default_storage.open(relative, "rb") as source:
+                # Rasmlar allaqachon siqilgan — deflate foiz uchun soniyalar sarflaydi.
+                archive.writestr(
+                    zipfile.ZipInfo(f"{index + 1:02d}-{label}.{extension}"),
+                    source.read(),
+                    compress_type=zipfile.ZIP_STORED,
+                )
+        archive.writestr("brief.txt", _brief_text_file(job))
+
+    payload = buffer.getvalue()
+    response = HttpResponse(payload, content_type="application/zip")
+    response["Content-Disposition"] = f'attachment; filename="naslai-{job.pk}.zip"'
+    response["Content-Length"] = str(len(payload))
+    return response
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def style_templates_list(request):
+    """Tayyor shablonlar galereyasi manifesti — kirishsiz.
+
+    Public: bu shaxsiy ma'lumot emas, barcha sotuvchilar uchun ochiq vitrina.
+    """
+    templates = [
+        {
+            "id": entry["file"],
+            "category": entry["category"],
+            "url": f"/api/style-templates/{quote(entry['file'])}",
+        }
+        for entry in load_style_templates()
+    ]
+    return Response({"templates": templates})
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def style_template_file(request, file_name: str):
+    """Shablon rasmining o'zi. Faqat manifestdagi fayllar beriladi — yo'l
+    hech qachon papkadan tashqariga chiqmaydi, hatto "../" qo'yilsa ham."""
+    path = resolve_style_template_path(unquote(file_name))
+    if path is None:
+        return Response({"error": "TEMPLATE_NOT_FOUND", "message": "Shablon topilmadi"}, status=404)
+    with open(path, "rb") as handle:
+        payload = handle.read()
+    response = HttpResponse(payload, content_type=style_template_mime(path))
+    response["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @api_view(["POST"])
@@ -293,3 +411,70 @@ def cancel_generation(request, pk: int):
         "job": job_payload(job, request),
         "balance": request.user.balance,
     })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([GenerationThrottle])
+def regenerate_slide(request, pk: int, variant: int):
+    """Tayyor vazifadan bitta kadrni qayta chizish.
+
+    Avval bitta yaroqsiz slaydni tuzatish uchun butun buyurtmani qaytadan
+    boshlash kerak edi — 8 slaydli paketda bitta rasm uchun 8 token.
+    Bu yerda aynan 1 token yechiladi, qolgan slaydlar tegilmaydi.
+
+    Sotuvchining izohi (`note`) promptga qo'shimcha qoida sifatida
+    qo'shiladi, urinishlar soni esa modeldan sezilarli boshqacha
+    kompozitsiya so'raydi.
+    """
+    job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
+    if job is None:
+        return Response({"error": "JOB_NOT_FOUND", "message": "Vazifa topilmadi"}, status=404)
+    if job.status != "success":
+        return Response({"error": "JOB_NOT_READY", "message": "Avval generatsiya tugashi kerak"}, status=409)
+
+    results = list(job.results or [])
+    if variant < 1 or variant > len(results):
+        return Response({"error": "RESULT_NOT_FOUND", "message": "Bunday slayd yo'q"}, status=404)
+
+    note = " ".join(str(request.data.get("note") or "").split())[:300]
+    settings = dict(job.settings or {})
+    counts = dict(settings.get("regenerateCount") or {})
+    notes = dict(settings.get("slideNotes") or {})
+    counts[str(variant)] = int(counts.get(str(variant), 0)) + 1
+    notes[str(variant)] = note
+    settings["regenerateCount"] = counts
+    settings["slideNotes"] = notes
+
+    label = f"Slaydni qayta chizish · {job.content_type} · {variant}-slayd"
+    try:
+        debit(request.user, TOKENS_PER_IMAGE, label)
+    except InsufficientBalance:
+        return Response(
+            {"error": "INSUFFICIENT_BALANCE", "message": f"Slaydni qayta chizish uchun {TOKENS_PER_IMAGE} token kerak"},
+            status=402,
+        )
+
+    job.settings = settings
+    job.save(update_fields=["settings", "updated_at"])
+
+    try:
+        results[variant - 1] = get_provider().generate(job, variant)
+    except Exception as error:  # включая GenerationError
+        logger.exception("Slaydni qayta chizib bo'lmadi")
+        # Token allaqachon yechilgan. Rasm yo'q — demak qaytaramiz, aks
+        # holda odam olmagan narsasi uchun to'laydi.
+        refund(request.user, TOKENS_PER_IMAGE, f"Qayta chizish uchun qaytarish · {job.content_type} · {variant}-slayd")
+        counts[str(variant)] -= 1
+        job.settings = settings
+        job.save(update_fields=["settings", "updated_at"])
+        request.user.refresh_from_db(fields=["balance"])
+        return Response(
+            {"error": "REGENERATION_FAILED", "message": str(error)[:300], "balance": request.user.balance},
+            status=502,
+        )
+
+    job.results = results
+    job.save(update_fields=["results", "updated_at"])
+    request.user.refresh_from_db(fields=["balance"])
+    return Response({"job": job_payload(job, request), "balance": request.user.balance}, status=202)

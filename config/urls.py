@@ -33,8 +33,12 @@ urlpatterns = [
     path("api/generations", generation_views.create_generation, name="generation-create"),
     path("api/generations/<int:pk>", generation_views.generation_detail, name="generation-detail"),
     path("api/generations/<int:pk>/cancel", generation_views.cancel_generation, name="generation-cancel"),
+    path("api/generations/<int:pk>/results/<int:variant>/regenerate", generation_views.regenerate_slide, name="generation-regenerate-slide"),
     path("api/projects", generation_views.projects_list, name="projects"),
-    path("api/projects/<int:pk>", generation_views.delete_project, name="project-delete"),
+    path("api/projects/<int:pk>", generation_views.project_detail, name="project-detail"),
+    path("api/projects/<int:pk>/archive.zip", generation_views.project_archive, name="project-archive"),
+    path("api/style-templates", generation_views.style_templates_list, name="style-templates-list"),
+    path("api/style-templates/<str:file_name>", generation_views.style_template_file, name="style-template-file"),
 
     path("api/promo/", include("promos.urls")),
     path("api/admin/", include("adminapi.urls")),
