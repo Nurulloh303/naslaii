@@ -20,8 +20,11 @@ from billing.services import InsufficientBalance, debit, refund
 from config.throttling import AnalyzeThrottle, GenerationThrottle
 
 from .analyze import analyze_image
+from .imaging import normalize_generated_image
+from .listing import generate_listing
 from .models import GenerationJob
-from .providers import get_provider
+from .plan import build_plan
+from .providers import GenerationError, _decode_data_url, _store, get_provider
 from .style_templates import load_style_templates, resolve_style_template_path, style_template_mime
 from .tasks import enqueue
 from .serializers import (
@@ -258,16 +261,26 @@ def project_detail(request, pk: int):
 
     # GET: bриф, matn rejasi, sozlamalar va barcha rasmlar bitta joyda —
     # loyihani qayta ochganda odam nimadan yig'ilganini yana ko'radi.
-    data = job_payload(job, request)
-    data["archiveUrl"] = f"/api/projects/{job.pk}/archive.zip"
-    data["brief"] = {
-        "title": job.title,
-        "subtitle": job.subtitle,
-        "category": job.category,
-        "benefits": [b for b in (job.benefits or []) if b],
+    card = project_payload(job, request)
+    detail = job_payload(job, request)
+    data = {
+        **card,
+        "summary": detail.get("context", {}).get("summary", ""),
+        "contentType": job.content_type,
+        # Asl mahsulot rasmi settings ichida data: URL sifatida saqlangan —
+        # alohida fayl kerak emas, to'g'ridan-to'g'ri <img src> bo'ladi.
+        "sourceUrl": (job.settings or {}).get("assetDataUrl") or None,
+        "archiveUrl": f"/api/projects/{job.pk}/archive.zip",
+        "brief": {
+            "title": job.title,
+            "subtitle": job.subtitle,
+            "category": job.category,
+            "benefits": [b for b in (job.benefits or []) if b],
+        },
+        "plan": (job.settings or {}).get("plan") or [],
+        "listing": (job.settings or {}).get("listing"),
+        "results": detail.get("results", []),
     }
-    data["plan"] = (job.settings or {}).get("plan") or []
-    data["listing"] = (job.settings or {}).get("listing")
     return Response({"project": data})
 
 
@@ -478,3 +491,96 @@ def regenerate_slide(request, pk: int, variant: int):
     job.save(update_fields=["results", "updated_at"])
     request.user.refresh_from_db(fields=["balance"])
     return Response({"job": job_payload(job, request), "balance": request.user.balance}, status=202)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def plan_view(request):
+    """Matn rejasi: brif bo'yicha, modelsiz, bepul va mgnovenno."""
+    brief = request.data.get("brief") or {}
+    settings_payload = request.data.get("settings") or {}
+    return Response({"plan": build_plan(brief, settings_payload)})
+
+
+@api_view(["PUT"])
+@permission_classes([IsAuthenticated])
+def compose_slide(request, pk: int, variant: int):
+    """Brauzerda o'z matni bilan yig'ilgan slaydni saqlaydi.
+
+    Fonni model chizadi (`textMode=own` — matnsiz), harflarni esa
+    brauzer o'zi chizadi (haqiqiy shrift bilan, AI xato yozmasin deb).
+    Bu yerda faqat tayyor rasm saqlanadi — token yechilmaydi.
+    """
+    job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
+    if job is None:
+        return Response({"error": "JOB_NOT_FOUND", "message": "Vazifa topilmadi"}, status=404)
+
+    results = list(job.results or [])
+    if variant < 1 or variant > len(results):
+        return Response({"error": "RESULT_NOT_FOUND", "message": "Bunday slayd yo'q"}, status=404)
+
+    image_data_url = str(request.data.get("imageDataUrl") or "")
+    try:
+        raw_bytes, _mime, _ext = _decode_data_url(image_data_url)
+    except GenerationError as error:
+        return Response({"error": "INVALID_IMAGE", "message": str(error)}, status=400)
+
+    image_bytes, extension = normalize_generated_image(raw_bytes, job.content_type)
+    stored = _store(image_bytes, job.user_id, extension)
+
+    current = dict(results[variant - 1])
+    current.update(stored)
+    current["composed"] = True
+    results[variant - 1] = current
+
+    job.results = results
+    job.save(update_fields=["results", "updated_at"])
+    return Response({"job": job_payload(job, request)})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyzeThrottle])
+def generate_listing_view(request):
+    """Uzum uchun bepul tavsif — istalgan rasmdan, loyihasiz.
+
+    Token yechilmaydi: bu — mahsulotga kirish nuqtasi, karta generatsiyasi
+    bilan bog'liq emas.
+    """
+    image = request.data.get("imageDataUrl") or ""
+    if not is_image_data_url(image):
+        return Response({"error": "INVALID_IMAGE", "message": "To'g'ri mahsulot rasmini yuklang"}, status=400)
+    hint = " ".join(str(request.data.get("hint") or "").split())[:200]
+    return Response({"listing": generate_listing(image, hint)})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyzeThrottle])
+def project_listing(request, pk: int):
+    """Xuddi shu tavsif, lekin tayyor loyihaning o'z rasmidan.
+
+    Natija loyiha ichida saqlanadi — keyingi safar `project_detail` uni
+    qayta so'ramasdan qaytaradi.
+    """
+    job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
+    if job is None:
+        return Response({"error": "PROJECT_NOT_FOUND", "message": "Loyiha topilmadi"}, status=404)
+    results = job.results or []
+    if not results:
+        return Response({"error": "PROJECT_NOT_READY", "message": "Avval karta tayyor bo'lishi kerak"}, status=409)
+
+    image_url = str(results[0].get("url") or "")
+    # Nisbiy "/media/..." OpenAI'ga yaramaydi — to'liq manzilga aylantiramiz.
+    if image_url.startswith(("http://", "https://", "data:")):
+        image_source = image_url
+    else:
+        image_source = request.build_absolute_uri(image_url)
+
+    listing = generate_listing(image_source)
+
+    settings_payload = dict(job.settings or {})
+    settings_payload["listing"] = listing
+    job.settings = settings_payload
+    job.save(update_fields=["settings", "updated_at"])
+    return Response({"listing": listing})
