@@ -208,4 +208,8 @@ def get_provider():
     name = os.environ.get("GENERATION_PROVIDER", "mock").lower()
     if name == "openai":
         return OpenAiGenerationProvider()
+    if name == "kie":
+        from .kie_provider import KieGenerationProvider  # локальный импорт — иначе циклическая зависимость
+
+        return KieGenerationProvider()
     return MockGenerationProvider()
