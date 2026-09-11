@@ -26,6 +26,7 @@ from django.core.files.storage import default_storage
 
 from .prompts import build_prompt, compact_prompt
 from .providers import GenerationError, _decode_data_url, _store
+from .translate import translate_brief
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,9 @@ class KieGenerationProvider:
     def generate(self, job, index: int) -> dict:
         settings = job.settings or {}
         brief = {"title": job.title, "subtitle": job.subtitle, "category": job.category, "benefits": job.benefits}
+        # Tarjima alohida — matnli chaqiruv, rasm provayderidan qat'i nazar
+        # xuddi shu OpenAI kalit bilan ishlaydi (analyze.py'dagi kabi).
+        brief = translate_brief(brief, settings.get("language"), os.environ.get("OPENAI_API_KEY"))
 
         product_url = _upload_input_image(settings.get("assetDataUrl", ""), job.user_id, "product")
 

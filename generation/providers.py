@@ -27,6 +27,7 @@ from django.core.files.storage import default_storage
 from PIL import Image, ImageDraw
 
 from .imaging import TARGET_HEIGHT, TARGET_WIDTH, normalize_generated_image
+from .translate import translate_brief
 from .prompts import build_prompt, compact_prompt, safe_minimal_prompt
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,7 @@ class OpenAiGenerationProvider:
     def generate(self, job, index: int) -> dict:
         settings = job.settings or {}
         brief = {"title": job.title, "subtitle": job.subtitle, "category": job.category, "benefits": job.benefits}
+        brief = translate_brief(brief, settings.get("language"), self.api_key)
 
         product_bytes, product_mime, product_ext = _decode_data_url(settings.get("assetDataUrl", ""))
         product = (product_bytes, product_mime, f"product.{product_ext}")
