@@ -43,6 +43,15 @@ def result_payload(raw: dict, index: int, request=None) -> dict:
     и старые задачи, сохранённые раньше, продолжают открываться.
     """
     url = _absolute(str(raw.get("url") or ""), request)
+    raw_layers = raw.get("layers") or []
+    layers = []
+    if isinstance(raw_layers, list):
+        for layer in raw_layers:
+            if isinstance(layer, dict):
+                layer_copy = dict(layer)
+                layer_copy["url"] = _absolute(str(layer_copy.get("url") or ""), request)
+                layers.append(layer_copy)
+
     return {
         "id": str(raw.get("id") or f"result-{index + 1}"),
         "title": raw.get("title") or f"{index + 1}-variant",
@@ -52,7 +61,9 @@ def result_payload(raw: dict, index: int, request=None) -> dict:
         "height": raw.get("height") or 0,
         "referenceUsed": raw.get("referenceUsed"),
         "promptTier": raw.get("promptTier"),
+        "layers": layers,
     }
+
 
 
 def job_payload(job: GenerationJob, request=None) -> dict:

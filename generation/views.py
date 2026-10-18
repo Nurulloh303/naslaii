@@ -21,6 +21,7 @@ from config.throttling import AnalyzeThrottle, GenerationThrottle
 
 from .analyze import analyze_image
 from .imaging import normalize_generated_image
+from .layers import decompose_layers
 from .listing import generate_listing
 from .models import GenerationJob
 from .plan import build_plan
@@ -584,3 +585,71 @@ def project_listing(request, pk: int):
     job.settings = settings_payload
     job.save(update_fields=["settings", "updated_at"])
     return Response({"listing": listing})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def magic_layers_view(request, pk: int, variant: int):
+    """Canva Magic Layers analogi: tayyor slayd rasmini alohida qatlamlarga ajratish.
+
+    fal-ai/qwen-image-layered orqali infografika shaffof PNG qatlamlarga bo'linadi.
+    Agar bu slayd allaqachon ajratilgan bo'lsa, keshdagi qatlamlar qaytariladi.
+    """
+    job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
+    if job is None:
+        return Response({"error": "JOB_NOT_FOUND", "message": "Vazifa topilmadi"}, status=404)
+
+    results = list(job.results or [])
+    if variant < 1 or variant > len(results):
+        return Response({"error": "RESULT_NOT_FOUND", "message": "Bunday slayd yo'q"}, status=404)
+
+    target_result = dict(results[variant - 1])
+
+    # Agar allaqachon qatlamlar ajratilgan bo'lsa va qayta ajratish majburiy bo'lmasa
+    force = request.data.get("force") is True
+    existing_layers = target_result.get("layers")
+    if existing_layers and not force:
+        return Response({
+            "ok": True,
+            "cached": True,
+            "variant": variant,
+            "layers": existing_layers,
+            "job": job_payload(job, request),
+        })
+
+    image_url = str(target_result.get("url") or "")
+    if not image_url:
+        return Response({"error": "IMAGE_EMPTY", "message": "Slayd rasmi topilmadi"}, status=400)
+
+    if not image_url.startswith(("http://", "https://", "data:")):
+        image_source = request.build_absolute_uri(image_url)
+    else:
+        image_source = image_url
+
+    num_layers = request.data.get("numLayers") or 4
+    try:
+        layers = decompose_layers(image_source, user_id=request.user.pk, num_layers=num_layers)
+    except GenerationError as error:
+        return Response(
+            {"error": error.code or "MAGIC_LAYERS_FAILED", "message": str(error)},
+            status=error.status or 502,
+        )
+    except Exception as error:
+        logger.exception("Magic layers xatolik: %s", error)
+        return Response(
+            {"error": "MAGIC_LAYERS_FAILED", "message": f"Qatlamlarga ajratib bo'lmadi: {error}"},
+            status=502,
+        )
+
+    target_result["layers"] = layers
+    results[variant - 1] = target_result
+    job.results = results
+    job.save(update_fields=["results", "updated_at"])
+
+    return Response({
+        "ok": True,
+        "variant": variant,
+        "layers": layers,
+        "job": job_payload(job, request),
+    })
+
