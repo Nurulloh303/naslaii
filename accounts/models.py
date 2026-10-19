@@ -52,16 +52,22 @@ class ApiKey(models.Model):
 
     Хранится только хэш: показать ключ повторно нельзя, и утечка базы
     не даёт доступа к чужим генерациям.
+
+    balance — токены на этом ключе. Расходуются независимо от User.balance.
+    Если ключ выдан внешнему разработчику, он платит через этот баланс.
     """
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_keys")
     name = models.CharField(max_length=64)
     prefix = models.CharField(max_length=24)
     digest = models.CharField(max_length=64, unique=True)
+    balance = models.PositiveIntegerField(default=0, help_text="Tokenlar soni")
+    note = models.CharField(max_length=200, blank=True, default="", help_text="Kim uchun / nima maqsadda")
     created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["created_at"]
 
     def __str__(self) -> str:
-        return f"{self.user_id}: {self.name}"
+        return f"{self.user_id}: {self.name} (balance={self.balance})"

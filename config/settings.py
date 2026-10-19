@@ -153,9 +153,11 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        # Браузер ходит с cookie сессии, внешние интеграции — с токеном.
+        # Brauzер cookie sессиясi bilan, tashqi integratsiyalar — DRF tokeni bilan,
+        # tashqi dasturchilar — nsk_live_xxx ApiKey bilan.
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.TokenAuthentication",
+        "accounts.authentication.ApiKeyAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     # Ответ об ошибке приводим к виду {"error": ..., "message": ...} —

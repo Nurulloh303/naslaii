@@ -10,4 +10,7 @@ urlpatterns = [
     path("promos/<str:code>", views.promo_detail, name="admin-promo-detail"),
     path("generations", views.generations, name="admin-generations"),
     path("orders", views.orders, name="admin-orders"),
+    # ApiKey boshqaruvi — admin boshqalarga kalit yaratadi va credit qo'shadi
+    path("api-keys", views.api_keys_collection, name="admin-api-keys"),
+    path("api-keys/<int:key_id>", views.api_key_detail, name="admin-api-key-detail"),
 ]

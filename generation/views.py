@@ -18,6 +18,7 @@ import logging
 from billing.pricing import TOKENS_PER_IMAGE, quote_for
 from billing.services import InsufficientBalance, debit, refund
 from config.throttling import AnalyzeThrottle, GenerationThrottle
+from accounts.models import ApiKey
 
 from .analyze import analyze_image
 from .imaging import normalize_generated_image
@@ -127,11 +128,30 @@ def create_generation(request):
     prune_old_jobs(request.user)
 
     quote = quote_for(settings_payload)
+    tokens_needed = quote["tokens"]
 
-    try:
-        user = debit(request.user, quote["tokens"], f"Generatsiya · {content_type}")
-    except InsufficientBalance as exc:
-        return Response({"error": "INSUFFICIENT_TOKENS", "message": str(exc)}, status=402)
+    # ApiKey orqali so'rov kelgan bo'lsa — kalit balansidan yechiladi.
+    # Oddiy foydalanuvchi so'rovi bo'lsa — user.balance dan.
+    api_key = getattr(request, "api_key", None)
+    if isinstance(api_key, ApiKey):
+        from django.db import transaction as _tx
+        with _tx.atomic():
+            locked_key = ApiKey.objects.select_for_update().get(pk=api_key.pk)
+            if locked_key.balance < tokens_needed:
+                return Response(
+                    {"error": "INSUFFICIENT_TOKENS",
+                     "message": f"API kalit tokenlar yetarli emas: kerak {tokens_needed}, mavjud {locked_key.balance}"},
+                    status=402,
+                )
+            locked_key.balance -= tokens_needed
+            locked_key.save(update_fields=["balance"])
+        user = request.user
+        user.refresh_from_db()
+    else:
+        try:
+            user = debit(request.user, tokens_needed, f"Generatsiya · {content_type}")
+        except InsufficientBalance as exc:
+            return Response({"error": "INSUFFICIENT_TOKENS", "message": str(exc)}, status=402)
 
     # Провайдер читает фото из settings: так у него один источник данных
     # и не нужно тащить отдельный аргумент через всю цепочку.
