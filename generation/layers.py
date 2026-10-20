@@ -44,22 +44,21 @@ def _prepare_image_source(image_source: str) -> str:
     if not image_source:
         raise GenerationError("Rasm manzili ko'rsatilmadi", status=400)
 
-    # Agar allaqachon to'liq internet havolasi yoki data URL bo'lsa
-    if image_source.startswith(("http://", "https://", "data:image/")):
+    if image_source.startswith("data:image/"):
         return image_source
 
-    # Agar lokal media yo'li bo'lsa (masalan: /media/generated/...)
-    media_url = getattr(default_storage, "base_url", "/media/")
-    relative_path = image_source
-    if relative_path.startswith(media_url):
-        relative_path = relative_path[len(media_url):].lstrip("/")
+    # Agar lokal media bo'lsa (URL ichida /media/ bo'lsa), to'g'ridan-to'g'ri diskdan o'qiymiz
+    if "/media/" in image_source:
+        relative_path = image_source.split("/media/", 1)[1].lstrip("/")
+        if default_storage.exists(relative_path):
+            with default_storage.open(relative_path, "rb") as f:
+                raw_bytes = f.read()
+            mime = "image/png" if relative_path.endswith(".png") else "image/jpeg"
+            b64 = base64.b64encode(raw_bytes).decode("ascii")
+            return f"data:{mime};base64,{b64}"
 
-    if default_storage.exists(relative_path):
-        with default_storage.open(relative_path, "rb") as f:
-            raw_bytes = f.read()
-        mime = "image/png" if relative_path.endswith(".png") else "image/jpeg"
-        b64 = base64.b64encode(raw_bytes).decode("ascii")
-        return f"data:{mime};base64,{b64}"
+    if image_source.startswith(("http://", "https://")):
+        return image_source
 
     return image_source
 
