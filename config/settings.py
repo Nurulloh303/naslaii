@@ -153,9 +153,9 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        # Brauzер cookie sессиясi bilan, tashqi integratsiyalar — DRF tokeni bilan,
+        # Brauzer sessiyasi (CSRF muammosiz), tashqi integratsiyalar — DRF tokeni bilan,
         # tashqi dasturchilar — nsk_live_xxx ApiKey bilan.
-        "rest_framework.authentication.SessionAuthentication",
+        "accounts.authentication.CsrfExemptSessionAuthentication",
         "rest_framework.authentication.TokenAuthentication",
         "accounts.authentication.ApiKeyAuthentication",
     ],

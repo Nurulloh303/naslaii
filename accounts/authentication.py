@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from django.utils import timezone
-from rest_framework.authentication import BaseAuthentication
+from rest_framework.authentication import BaseAuthentication, SessionAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
 from accounts.models import ApiKey
@@ -22,6 +22,17 @@ from accounts.models import ApiKey
 logger = logging.getLogger(__name__)
 
 KEY_PREFIX = "nsk_live_"
+
+
+class CsrfExemptSessionAuthentication(SessionAuthentication):
+    """API chaqiruvlarida CSRF token talabini o'chiradi.
+
+    Brauzerdan keladigan AJAX/fetch so'rovlarida 'CSRF Failed: CSRF token missing'
+    xatosi chiqmasligi uchun.
+    """
+
+    def enforce_csrf(self, request):
+        return  # CSRF tekshiruvini bajarmaydi
 
 
 class ApiKeyAuthentication(BaseAuthentication):
