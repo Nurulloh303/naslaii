@@ -24,7 +24,7 @@ from django.conf import settings as django_settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 
-from .prompts import build_prompt, compact_prompt
+from .prompts import build_prompt, compact_prompt, safe_minimal_prompt
 from .providers import GenerationError, _decode_data_url, _store
 from .translate import translate_brief
 
@@ -49,6 +49,9 @@ PUBLIC_MEDIA_BASE = os.environ.get(
 
 
 def _public_url(path: str) -> str:
+    # Storage allaqachon to'liq URL qaytargan bo'lsa (masalan S3), uni qaytadan qo'shmaymiz.
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
     return f"{PUBLIC_MEDIA_BASE}{path}" if path.startswith("/") else f"{PUBLIC_MEDIA_BASE}/{path}"
 
 
@@ -145,15 +148,18 @@ class KieGenerationProvider:
             reference_url = _upload_input_image(reference_data_url, job.user_id, "reference")
             input_urls = [reference_url, product_url]
 
+        # Fallback zanjiri: reference bilan primary → reference bilan compact
+        # → reference siz safe-minimal (OpenAI provayderidagi kabi).
         attempts = [
-            ("primary", build_prompt(brief, settings, index, has_reference)),
-            ("compact", compact_prompt(brief, settings, index, has_reference)),
+            ("primary",      build_prompt(brief, settings, index, has_reference),      input_urls,        has_reference),
+            ("compact",      compact_prompt(brief, settings, index, has_reference),     input_urls,        has_reference),
+            ("safe-minimal", safe_minimal_prompt(brief, settings, index),               [product_url],     False),
         ]
 
         last_error: GenerationError | None = None
-        for tier, prompt in attempts:
+        for tier, prompt, tier_urls, reference_used in attempts:
             try:
-                task_id = _create_task(prompt, input_urls, self.api_key)
+                task_id = _create_task(prompt, tier_urls, self.api_key)
                 result_url = _wait_for_result(task_id, self.api_key)
                 image_response = requests.get(result_url, timeout=KIE_REQUEST_TIMEOUT)
                 image_response.raise_for_status()
@@ -162,10 +168,13 @@ class KieGenerationProvider:
                 image_bytes, extension = normalize_generated_image(image_response.content, job.content_type)
                 result = _store(image_bytes, job.user_id, extension)
                 result["promptTier"] = tier
-                result["referenceUsed"] = has_reference
+                result["referenceUsed"] = reference_used
                 return result
             except (GenerationError, requests.RequestException) as error:
                 last_error = error if isinstance(error, GenerationError) else GenerationError(str(error), status=502)
-                logger.warning("Kie tier %s bajarilmadi (%s), keyingisiga o‘tamiz", tier, last_error.code)
+                logger.warning(
+                    "Kie tier %s bajarilmadi (%s): %s — keyingisiga o'tamiz",
+                    tier, getattr(last_error, 'code', 'REQUEST_ERROR'), last_error,
+                )
 
         raise last_error or GenerationError("Generatsiya bajarilmadi", status=502)
