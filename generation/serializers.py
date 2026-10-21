@@ -24,15 +24,29 @@ def is_image_data_url(value) -> bool:
 #
 # Ставьте NASLAI_ABSOLUTE_MEDIA_URLS=1, только если API вынесен на
 # отдельный домен вроде api.naslai.uz.
-ABSOLUTE_MEDIA_URLS = os.environ.get("NASLAI_ABSOLUTE_MEDIA_URLS", "0") == "1"
-
-
 def _absolute(url: str, request=None) -> str:
+    """Rasmga to'liq URL yasaydi (masalan https://api.naslai.uz/media/...).
+    
+    Frontend (naslai.uz) va API (api.naslai.uz) alohida domenlarda bo'lgani uchun
+    nisbiy URL (/media/...) 404 xatosiga olib keladi. Shuning uchun sukut bo'yicha
+    to'liq URL qaytaramiz.
+    """
     if not url:
         return ""
-    if not ABSOLUTE_MEDIA_URLS or request is None or url.startswith(("http://", "https://", "data:")):
+    if url.startswith(("http://", "https://", "data:")):
         return url
-    return request.build_absolute_uri(url)
+
+    # Agar maxsus 0 qilib o'chirilmagan bo'lsa, to'liq URL qaytaramiz
+    if os.environ.get("NASLAI_ABSOLUTE_MEDIA_URLS", "1").strip().lower() in ("0", "false", "no"):
+        return url
+
+    if request is not None:
+        return request.build_absolute_uri(url)
+
+    site_domain = os.environ.get("NASLAI_SITE_DOMAIN", "naslai.uz").strip()
+    media_base = os.environ.get("NASLAI_PUBLIC_MEDIA_BASE", f"https://api.{site_domain}").rstrip("/")
+    clean_url = url if url.startswith("/") else f"/{url}"
+    return f"{media_base}{clean_url}"
 
 
 def result_payload(raw: dict, index: int, request=None) -> dict:
