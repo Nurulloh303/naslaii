@@ -127,7 +127,10 @@ def decompose_layers(image_source: str, user_id: int, num_layers: int = 4) -> li
         raise GenerationError("Fal.ai vazifa identifikatorini qaytarmadi", status=502)
 
     # 2. Tayyor bo'lguncha kutish (Polling)
-    status_url = f"{FAL_QUEUE_URL}/requests/{request_id}"
+    # fal.ai queue: status_url IN_QUEUE/IN_PROGRESS/COMPLETED qaytaradi.
+    # response_url esa faqat COMPLETED bo'lgach natijani qaytaradi (bajarilayotganda 400 qaytaradi).
+    status_url = queue_data.get("status_url") or f"{FAL_QUEUE_URL}/requests/{request_id}/status"
+    response_url = queue_data.get("response_url") or f"{FAL_QUEUE_URL}/requests/{request_id}"
     start_time = time.time()
     result_data = None
 
@@ -145,8 +148,16 @@ def decompose_layers(image_source: str, user_id: int, num_layers: int = 4) -> li
         status = poll_data.get("status")
 
         if status == "COMPLETED":
-            result_data = poll_data.get("response") or poll_data
-            break
+            # Natijani response_url orqali olamiz
+            try:
+                res_resp = requests.get(response_url, headers=headers, timeout=30)
+                if res_resp.ok:
+                    result_data = res_resp.json()
+                    break
+                else:
+                    logger.warning("Fal.ai response_url xatosi: %s %s", res_resp.status_code, res_resp.text[:200])
+            except requests.RequestException as e:
+                logger.warning("Fal.ai response_url ulanish xatosi: %s", e)
         elif status == "FAILED":
             err = poll_data.get("error") or "Noma'lum xatolik"
             raise GenerationError(f"Qatlamlarga ajratish bajarilmadi: {err}", status=502)
@@ -159,6 +170,8 @@ def decompose_layers(image_source: str, user_id: int, num_layers: int = 4) -> li
     raw_images = result_data.get("images") or result_data.get("output", {}).get("images") or []
     if not raw_images:
         raise GenerationError("AI hech qanday qatlam qaytarmadi", status=502)
+
+    from .serializers import _absolute
 
     stored_layers = []
     layer_names = ["Orqa fon", "Asosiy mahsulot", "Matnlar va belgilar", "Qo'shimcha elementlar"]
@@ -180,13 +193,14 @@ def decompose_layers(image_source: str, user_id: int, num_layers: int = 4) -> li
         filename = f"generated/user_{user_id}/layers/{uuid.uuid4().hex}.png"
         saved_path = default_storage.save(filename, ContentFile(layer_bytes))
         local_url = default_storage.url(saved_path)
+        abs_url = _absolute(local_url)
 
         name = layer_names[idx] if idx < len(layer_names) else f"Qatlam {idx + 1}"
         stored_layers.append({
             "id": f"layer_{idx + 1}_{uuid.uuid4().hex[:6]}",
             "order": idx + 1,
             "name": name,
-            "url": local_url,
+            "url": abs_url,
             "width": layer_info.get("width", 1080),
             "height": layer_info.get("height", 1440),
         })

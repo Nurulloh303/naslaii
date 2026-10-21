@@ -55,11 +55,64 @@ def _public_url(path: str) -> str:
     return f"{PUBLIC_MEDIA_BASE}{path}" if path.startswith("/") else f"{PUBLIC_MEDIA_BASE}/{path}"
 
 
-def _upload_input_image(data_url: str, user_id: int, label: str) -> str:
-    """Data: URL'ni media'ga saqlaydi va Kie o'qiy oladigan ochiq havolani qaytaradi."""
-    raw_bytes, _mime, extension = _decode_data_url(data_url)
-    name = f"uploads/user_{user_id}/{label}-{uuid.uuid4().hex}.{extension}"
+def _upload_to_kie(raw_bytes: bytes, filename: str, mime: str, api_key: str) -> str | None:
+    """Rasmni bevosita Kie CDN'iga yuklaydi (tempfile.redpandaai.co).
+    
+    Bu Kie serverlari rasm yuklashda 'Image fetch failed' xatosiga uchramasligini
+    100% kafolatlaydi, chunki rasm bevosita ularning o'z tizimida bo'ladi.
+    """
+    if not api_key:
+        return None
+    try:
+        res = requests.post(
+            "https://kieai.redpandaai.co/api/file-stream-upload",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (filename, raw_bytes, mime)},
+            data={"uploadPath": "naslai"},
+            timeout=25,
+        )
+        if res.ok:
+            data = res.json().get("data") or {}
+            download_url = data.get("downloadUrl")
+            if download_url:
+                logger.info("Rasm muvaffaqiyatli Kie CDN ga yuklandi: %s", download_url)
+                return download_url
+        logger.warning("Kie file upload xatosi: %s %s", res.status_code, res.text[:200])
+    except Exception as e:
+        logger.warning("Kie file upload ulanish xatosi: %s", e)
+    return None
+
+
+def _upload_input_image(data_url: str, user_id: int, label: str, api_key: str = "") -> str:
+    """Data: URL yoki HTTP URL'ni Kie o'qiy oladigan ochiq havolaga aylantiradi."""
+    if not data_url:
+        return ""
+
+    # Agar allaqachon to'liq URL bo'lsa
+    if data_url.startswith(("http://", "https://")):
+        # Agar bu bizning media bo'lsa va diskda mavjud bo'lsa, o'qib Kie'ga yuklaymiz
+        if "/media/" in data_url:
+            rel = data_url.split("/media/", 1)[1].lstrip("/")
+            if default_storage.exists(rel):
+                with default_storage.open(rel, "rb") as f:
+                    raw_bytes = f.read()
+                mime = "image/png" if rel.endswith(".png") else "image/jpeg"
+                kie_url = _upload_to_kie(raw_bytes, f"{label}.png", mime, api_key)
+                if kie_url:
+                    return kie_url
+        return _public_url(data_url)
+
+    raw_bytes, mime, extension = _decode_data_url(data_url)
+    filename = f"{label}-{uuid.uuid4().hex}.{extension}"
+    name = f"uploads/user_{user_id}/{filename}"
     path = default_storage.save(name, ContentFile(raw_bytes))
+
+    # 1. Eng ishonchli usul: rasmni to'g'ridan-to'g'ri Kie CDN'iga yuklaymiz
+    kie_url = _upload_to_kie(raw_bytes, filename, mime, api_key)
+    if kie_url:
+        return kie_url
+
+    # 2. Zaxira (fallback): o'z serverimizdagi public_url
     return _public_url(default_storage.url(path))
 
 
@@ -139,13 +192,13 @@ class KieGenerationProvider:
         # xuddi shu OpenAI kalit bilan ishlaydi (analyze.py'dagi kabi).
         brief = translate_brief(brief, settings.get("language"), os.environ.get("OPENAI_API_KEY"))
 
-        product_url = _upload_input_image(settings.get("assetDataUrl", ""), job.user_id, "product")
+        product_url = _upload_input_image(settings.get("assetDataUrl", ""), job.user_id, "product", self.api_key)
 
         reference_data_url = settings.get("designReferenceDataUrl") or ""
         has_reference = bool(reference_data_url) and settings.get("contentType") in ("card", "copyStyle")
         input_urls = [product_url]
         if has_reference:
-            reference_url = _upload_input_image(reference_data_url, job.user_id, "reference")
+            reference_url = _upload_input_image(reference_data_url, job.user_id, "reference", self.api_key)
             input_urls = [reference_url, product_url]
 
         # Fallback zanjiri: reference bilan primary → reference bilan compact
