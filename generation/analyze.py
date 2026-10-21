@@ -103,25 +103,52 @@ def mock_brief(language: str) -> dict:
     }
 
 
-def analyze_image(image_data_url: str, marketplace: str, language: str) -> dict:
-    language = normalize_language(language)
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    provider = os.environ.get("GENERATION_PROVIDER", "mock").lower()
+def _call_openai_vision(api_key: str, model: str, prompt: str, image_data_url: str) -> str | None:
+    # 1. Standart chat/completions (har qanday OpenAI API kaliti bilan 100% ishlaydi)
+    for target_model in [model, "gpt-4o-mini"]:
+        try:
+            res = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": target_model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
+                            ],
+                        }
+                    ],
+                    "max_tokens": 600,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if res.ok:
+                data = res.json()
+                choices = data.get("choices") or []
+                if choices:
+                    content = (choices[0].get("message") or {}).get("content")
+                    if content:
+                        return content
+            else:
+                logger.warning("OpenAI chat/completions (%s) xatosi: %s %s", target_model, res.status_code, res.text[:200])
+        except requests.RequestException as e:
+            logger.warning("OpenAI chat/completions (%s) tarmoq xatosi: %s", target_model, e)
 
-    if provider == "mock" or not api_key:
-        return mock_brief(language)
-
+    # 2. Fallback: v1/responses (yangi beta endpoint)
     try:
-        response = requests.post(
+        res = requests.post(
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
-                "model": os.environ.get("OPENAI_BRIEF_MODEL", "gpt-4o"),
+                "model": model,
                 "input": [
                     {
                         "role": "user",
                         "content": [
-                            {"type": "input_text", "text": build_prompt(marketplace, language)},
+                            {"type": "input_text", "text": prompt},
                             {"type": "input_image", "image_url": image_data_url, "detail": "high"},
                         ],
                     }
@@ -130,24 +157,43 @@ def analyze_image(image_data_url: str, marketplace: str, language: str) -> dict:
             },
             timeout=REQUEST_TIMEOUT,
         )
-        if not response.ok:
-            logger.warning("Brief so‘rovi bajarilmadi: %s", response.status_code)
-            return {**mock_brief(language), "aiNotice": CHECK_NOTICE[language]}
+        if res.ok:
+            data = res.json()
+            text = data.get("output_text")
+            if not text:
+                for item in data.get("output", []):
+                    for part in item.get("content", []):
+                        if part.get("text"):
+                            return part["text"]
+            return text
+        else:
+            logger.warning("OpenAI responses API xatosi: %s %s", res.status_code, res.text[:200])
+    except requests.RequestException as e:
+        logger.warning("OpenAI responses API tarmoq xatosi: %s", e)
 
-        payload = response.json()
-        text = payload.get("output_text")
+    return None
+
+
+def analyze_image(image_data_url: str, marketplace: str, language: str) -> dict:
+    language = normalize_language(language)
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+
+    if not api_key:
+        logger.warning("AI tahlil bajarilmadi: OPENAI_API_KEY o'rnatilmagan yoki bo'sh.")
+        return mock_brief(language)
+
+    model = os.environ.get("OPENAI_BRIEF_MODEL", "gpt-4o-mini")
+    prompt = build_prompt(marketplace, language)
+
+    try:
+        text = _call_openai_vision(api_key, model, prompt, image_data_url)
         if not text:
-            for item in payload.get("output", []):
-                for part in item.get("content", []):
-                    if part.get("text"):
-                        text = part["text"]
-                        break
-        if not text:
-            return mock_brief(language)
+            return {**mock_brief(language), "aiNotice": CHECK_NOTICE[language]}
 
         cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
         return _clean(json.loads(cleaned), language)
     except (requests.RequestException, ValueError, json.JSONDecodeError, KeyError, TypeError) as error:
-        # Отказ анализа не должен ломать поток: человек заполнит бриф сам.
+        # Tahlil xatosi generatsiyani to'xtatmaydi: foydalanuvchi ma'lumotlarni o'zi to'ldirishi mumkin.
         logger.warning("Brief javobini o‘qib bo‘lmadi: %s", error)
         return mock_brief(language)
+

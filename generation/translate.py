@@ -110,22 +110,50 @@ def translate_brief(brief: dict, language: str | None, api_key: str | None) -> d
         f"kalitlar bilan:\n{json.dumps(source, ensure_ascii=False)}"
     )
 
-    try:
-        response = requests.post(
-            "https://api.openai.com/v1/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": os.environ.get("OPENAI_BRIEF_MODEL", "gpt-4o"),
-                "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-                "max_output_tokens": 500,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-        if not response.ok:
-            logger.warning("Bref tarjimasi bajarilmadi: %s", response.status_code)
-            return brief
+    model = os.environ.get("OPENAI_BRIEF_MODEL", "gpt-4o-mini")
+    text = None
 
-        text = _extract_text(response.json())
+    # 1. Standart chat/completions
+    for target_model in [model, "gpt-4o-mini"]:
+        try:
+            res = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": target_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 500,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if res.ok:
+                choices = res.json().get("choices") or []
+                if choices:
+                    text = (choices[0].get("message") or {}).get("content")
+                    if text:
+                        break
+        except requests.RequestException:
+            pass
+
+    # 2. Fallback: v1/responses
+    if not text:
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                    "max_output_tokens": 500,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if response.ok:
+                text = _extract_text(response.json())
+        except requests.RequestException:
+            pass
+
+    try:
         if not text:
             return brief
 
@@ -140,6 +168,6 @@ def translate_brief(brief: dict, language: str | None, api_key: str | None) -> d
         if translated.get("benefits"):
             result["benefits"] = [str(item).strip()[:80] for item in translated["benefits"] if str(item).strip()][:4]
         return result
-    except (requests.RequestException, ValueError, json.JSONDecodeError, KeyError, TypeError) as error:
+    except (ValueError, json.JSONDecodeError, KeyError, TypeError) as error:
         logger.warning("Bref tarjimasini o'qib bo'lmadi: %s", error)
         return brief
