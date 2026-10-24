@@ -22,7 +22,7 @@ from accounts.models import ApiKey
 
 from .analyze import analyze_image
 from .imaging import normalize_generated_image
-from .layers import decompose_layers
+from .layers import LAYERS_VERSION, decompose_layers
 from .listing import generate_listing
 from .models import GenerationJob
 from .plan import build_plan
@@ -612,8 +612,10 @@ def project_listing(request, pk: int):
 def magic_layers_view(request, pk: int, variant: int):
     """Canva Magic Layers analogi: tayyor slayd rasmini alohida qatlamlarga ajratish.
 
-    fal-ai/qwen-image-layered orqali infografika shaffof PNG qatlamlarga bo'linadi.
-    Agar bu slayd allaqachon ajratilgan bo'lsa, keshdagi qatlamlar qaytariladi.
+    Matn OpenAI vision bilan tahrirlanadigan textLayers'ga aylantiriladi, rasmdan
+    o'chiriladi (fal inpaint), qolgani fal-ai/qwen-image-layered orqali shaffof PNG
+    qatlamlarga bo'linadi. Agar slayd allaqachon v2 bilan ajratilgan bo'lsa,
+    keshdagi qatlamlar qaytariladi.
     """
     job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
     if job is None:
@@ -628,12 +630,16 @@ def magic_layers_view(request, pk: int, variant: int):
     # Agar allaqachon qatlamlar ajratilgan bo'lsa va qayta ajratish majburiy bo'lmasa
     force = request.data.get("force") is True
     existing_layers = target_result.get("layers")
-    if existing_layers and not force:
+    # Eski (v1) kesh — matn qatlamlari yo'q, shuning uchun qayta hisoblanadi.
+    if existing_layers and not force and target_result.get("layersVersion") == LAYERS_VERSION:
         return Response({
             "ok": True,
             "cached": True,
             "variant": variant,
             "layers": existing_layers,
+            "textLayers": target_result.get("textLayers") or [],
+            "textRemoved": bool(target_result.get("textRemoved")),
+            "layersVersion": LAYERS_VERSION,
             "job": job_payload(job, request),
         })
 
@@ -648,7 +654,7 @@ def magic_layers_view(request, pk: int, variant: int):
 
     num_layers = request.data.get("numLayers") or 4
     try:
-        layers = decompose_layers(image_source, user_id=request.user.pk, num_layers=num_layers)
+        decomposed = decompose_layers(image_source, user_id=request.user.pk, num_layers=num_layers)
     except GenerationError as error:
         return Response(
             {"error": error.code or "MAGIC_LAYERS_FAILED", "message": str(error)},
@@ -661,7 +667,10 @@ def magic_layers_view(request, pk: int, variant: int):
             status=502,
         )
 
-    target_result["layers"] = layers
+    target_result["layers"] = decomposed["layers"]
+    target_result["textLayers"] = decomposed["textLayers"]
+    target_result["textRemoved"] = decomposed["textRemoved"]
+    target_result["layersVersion"] = decomposed["layersVersion"]
     results[variant - 1] = target_result
     job.results = results
     job.save(update_fields=["results", "updated_at"])
@@ -669,7 +678,10 @@ def magic_layers_view(request, pk: int, variant: int):
     return Response({
         "ok": True,
         "variant": variant,
-        "layers": layers,
+        "layers": decomposed["layers"],
+        "textLayers": decomposed["textLayers"],
+        "textRemoved": decomposed["textRemoved"],
+        "layersVersion": decomposed["layersVersion"],
         "job": job_payload(job, request),
     })
 
