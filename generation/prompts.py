@@ -571,7 +571,7 @@ Exactly 3 short badges, at least one containing a concrete number.
 {f"Use only these verified callouts if needed: {facts}." if facts else "Do not invent product benefits or callouts."}
 Clean commercial design, readable large text, accent colour taken from the product itself.
 {NO_MARKETPLACE_BRANDING}
-Variant {variant}."""
+Variant {variant}.""" + style_preset_rule(settings)
 
 
 def safe_minimal_prompt(brief: dict, settings: dict, variant: int) -> str:
@@ -587,7 +587,7 @@ Large readable text only.
 {f"Callouts: {callouts}" if callouts else ""}
 Clean commercial layout. Accent colour taken from the product itself.
 {NO_MARKETPLACE_BRANDING}
-Variant {variant}."""
+Variant {variant}.""" + style_preset_rule(settings)
 
 
 def rerender_rules(settings: dict, variant: int) -> str:
@@ -657,13 +657,64 @@ LEAVE ROOM FOR THE TEXT LAYER:
 {NO_MARKETPLACE_BRANDING}
 Photorealistic, sharp, premium commercial quality. Variant {variant}: change the camera angle and the light, keep the same product."""
 
+
+# Karta uslubi (frontend: src/features/create/domain/stylePresets.ts).
+# Ilgari bu tanlov serverga yetib kelardi, lekin promptga hech qayerda
+# qo'shilmasdi — "Minimalizm" yoki "Premium" tanlansa ham natija bir xil
+# chiqardi. Identifikatorlar frontenddagi STYLE_PRESETS bilan bir xil.
+STYLE_PRESET_HINTS = {
+    "minimal": (
+        "MINIMALISM. Calm off-white / warm light-grey background (#f5f3ef, #c9c4bb), near-black text (#1c1c1c). "
+        "Lots of empty space, one thin accent line at most, simple flat badges without heavy shadows or gradients, "
+        "a single clean sans-serif font family, no decorative clutter."
+    ),
+    "premium": (
+        "PREMIUM / LUXURY. Deep dark background (#12100e) with warm gold accents (#c8a250) and cream details (#efe7d8). "
+        "Elegant serif or refined thin sans-serif headline, soft dramatic studio light, subtle reflections, "
+        "thin gold frames or dividers, restrained and expensive-looking, few badges."
+    ),
+    "bright": (
+        "BRIGHT / BOLD SALE. Saturated orange (#ff7a1a) dominant background with cream (#fff4e6) and black (#1c1c1c) contrast. "
+        "Energetic dynamic composition, big heavy headline, punchy rounded badges, playful geometric shapes, high contrast."
+    ),
+    "lifestyle": (
+        "LIFESTYLE. Warm beige / sand tones (#d8c7b3, #fdfaf6) with brown accents (#6d5c48). "
+        "The product placed in a cozy real-life interior scene with natural soft daylight, soft shadows, "
+        "friendly rounded typography and soft badges."
+    ),
+    "tech": (
+        "TECH / FUTURISTIC. Dark navy background (#0b1520) with electric turquoise accents (#2ee6d6) and light-blue text (#e8f4ff). "
+        "Glowing lines, subtle grid or circuit pattern, glass-like spec badges with icons, modern geometric sans-serif."
+    ),
+    "nature": (
+        "NATURAL / ECO. Soft sage-green and cream palette (#eaf1e4, #f7f5ee) with deep green accents (#3f6b3a). "
+        "Natural materials (leaves, wood, stone, linen), soft daylight, organic rounded shapes, calm friendly typography."
+    ),
+    "bold": (
+        "HIGH CONTRAST. Black (#111111) and light-grey/white (#f2f2f2) split composition with strong red accents (#ff3b30). "
+        "Very large condensed bold headline, sharp graphic blocks, strong diagonal or split layout, maximum readability."
+    ),
+}
+
+
+def style_preset_rule(settings: dict) -> str:
+    """Foydalanuvchi tanlagan karta uslubi. Tanlanmagan bo'lsa (Avto) — bo'sh."""
+    hint = STYLE_PRESET_HINTS.get(str(settings.get("stylePreset") or "").strip().lower())
+    if not hint:
+        return ""
+    return (
+        "\n\nDESIGN STYLE CHOSEN BY THE USER — follow it strictly; it overrides any other colour or style guidance above: "
+        + hint
+    )
+
+
 def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
     """Главная точка входа: какой промпт нужен для этой задачи."""
     content_type = settings.get("contentType", "card")
     # Свой текст несовместим с копией референса: там весь смысл в том,
     # чтобы повторить чужую типографику.
     if settings.get("textMode") == "own" and not has_reference and content_type != "fashion":
-        return clean_background_prompt(brief, settings, variant)
+        return clean_background_prompt(brief, settings, variant) + style_preset_rule(settings)
     if has_reference and content_type in ("card", "copyStyle"):
         prompt = style_copy_prompt(brief, settings, variant)
     elif content_type == "fashion":
@@ -672,6 +723,10 @@ def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool)
         prompt = marketplace_package_prompt(settings, variant - 1)
     else:
         prompt = generation_prompt(brief, settings, variant)
+
+    # Uslub namunasi (reference rasm) bo'lsa, uslubni o'sha rasm belgilaydi.
+    if not has_reference and content_type in ("card", "marketplacePackage"):
+        prompt += style_preset_rule(settings)
 
     fix = rerender_rules(settings, variant)
 

@@ -221,7 +221,11 @@ class KieGenerationProvider:
                 image_bytes, extension = normalize_generated_image(image_response.content, job.content_type)
                 result = _store(image_bytes, job.user_id, extension)
                 result["promptTier"] = tier
-                result["referenceUsed"] = reference_used
+                # Reference umuman berilmagan bo'lsa None: aks holda frontend
+                # "referens ishlatilmadi" deb noto'g'ri ogohlantirardi.
+                result["referenceUsed"] = reference_used if has_reference else None
+                if has_reference and not reference_used:
+                    logger.error("Referens bilan generatsiya bajarilmadi, referenssiz shablonga o'tildi: job=%s sabab=%s", job.pk, last_error)
                 return result
             except (GenerationError, requests.RequestException) as error:
                 last_error = error if isinstance(error, GenerationError) else GenerationError(str(error), status=502)

@@ -1100,3 +1100,26 @@ class MagicLayersViewCacheTests(TestCase):
             r = self.client.post(f"/api/generations/{job.pk}/results/1/layers", {"force": True}, format="json")
         self.assertEqual(r.status_code, 200, r.content)
         self.assertTrue(decompose.called)
+
+
+class StylePresetPromptTests(TestCase):
+    """Karta uslubi (Minimalizm, Premium, ...) promptga haqiqatan tushishi kerak."""
+
+    brief = {"title": "Soat", "subtitle": "", "category": "Aksessuar", "benefits": ["Suvga chidamli"]}
+
+    def test_preset_added_without_reference(self):
+        from .prompts import build_prompt, compact_prompt, safe_minimal_prompt
+
+        settings = {"contentType": "card", "stylePreset": "premium"}
+        self.assertIn("PREMIUM", build_prompt(self.brief, settings, 1, False))
+        self.assertIn("PREMIUM", compact_prompt(self.brief, settings, 1, False))
+        self.assertIn("PREMIUM", safe_minimal_prompt(self.brief, settings, 1))
+
+    def test_auto_and_reference_have_no_preset(self):
+        from .prompts import build_prompt
+
+        self.assertNotIn("DESIGN STYLE CHOSEN", build_prompt(self.brief, {"contentType": "card", "stylePreset": ""}, 1, False))
+        self.assertNotIn(
+            "DESIGN STYLE CHOSEN",
+            build_prompt(self.brief, {"contentType": "card", "stylePreset": "tech", "designReferenceDataUrl": "x"}, 1, True),
+        )
