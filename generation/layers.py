@@ -1,20 +1,21 @@
-"""Magic Layers v3 — rasmdagi matnni joyida tahrirlash (Canva / ChatGPT image edit kabi).
-
-Asosiy qoida: asl rasm (mahsulot!) O'ZGARMAYDI. Generativ inpaint ishlatilmaydi.
+"""Magic Layers v4 — tekis rasmni Canva "Magic Layers" kabi qatlamlarga ajratish.
 
 Quvur (pipeline):
-1. ``baseUrl`` — asl rasm, tegilmaydi.
-2. OpenAI vision matn bloklarini topadi (aniq matn, uslub, taxminiy quti);
-   fal ``florence-2-large/ocr-with-region`` qator qutilari bilan aniqlashtiriladi;
-   har bir quti lokal harf maskasi bo'yicha toraytiriladi.
-3. Lokal OpenCV harflarni o'chiradi (``text_eraser``): tekis fonda median rang,
-   aks holda ``cv2.inpaint`` (TELEA). Natija — ``cleanUrl`` (asl o'lchamdagi PNG,
-   maskadan tashqarisi asl rasm bilan bir xil).
-4. ``separateObjects: true`` bo'lsagina toza rasm fal-ai/qwen-image-layered bilan
-   rasm qatlamlariga bo'linadi (aks holda ``layers: []``).
+1. Aniqlash (parallel): OpenAI vision — matn bloklari + vizual obyektlar
+   (mahsulot, ikonka kartalari, badge'lar...); fal Florence OCR — matn qutilarini
+   aniqlashtirish (takrorlar olib tashlanadi, fontSize qutiga siqiladi).
+2. Matn: lokal OpenCV harflarni o'chiradi → ``textClean``; har bir matn qatlami
+   uchun asl harflarning RGBA kesmasi (``imageUrl`` / ``imageBox``) — frontend
+   matn o'zgartirilmaguncha aynan asl ko'rinishni ko'rsatadi.
+3. Obyektlar: har bir obyekt qutisi uchun fal SAM2 (textClean ustida) → RGBA
+   element (``elements``).
+4. Fon: obyekt maskalari birlashmasi fal bria/eraser bilan to'ldiriladi (faqat
+   maska ichiga qo'yiladi), fal ishlamasa — OpenCV TELEA → ``backgroundUrl``.
+5. Barcha fayllar ``generated/user_*/layers/`` ostida, tasodifiy uuid nomlar bilan;
+   brauzerga ``/api/layer-files/<yo'l>`` orqali (CORS sarlavhalari bilan) beriladi.
 
-OCR/OpenAI/eraser xatosi hech qachon 500 bermaydi: matn bo'lmasa
-``textLayers: []``, ``cleanUrl: null``, ``textRemoved: false``.
+Hech qanday bosqich xatosi 500 bermaydi: OpenAI yiqilsa — matn/obyekt yo'q, fon =
+asl rasm; SAM yiqilsa — o'sha obyekt o'tkaziladi; eraser yiqilsa — OpenCV.
 """
 
 from __future__ import annotations
@@ -30,27 +31,29 @@ import requests
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 
+from . import object_layers as ol
 from . import text_eraser as te
 from . import text_layers as tl
 from .providers import GenerationError
 
 logger = logging.getLogger(__name__)
 
-LAYERS_VERSION = 3
+LAYERS_VERSION = 4
 
-FAL_ENDPOINT = "fal-ai/qwen-image-layered"
 FAL_OCR_ENDPOINT = os.environ.get("FAL_OCR_ENDPOINT", "").strip() or "fal-ai/florence-2-large/ocr-with-region"
 FAL_QUEUE_BASE = "https://queue.fal.run"
-FAL_QUEUE_URL = f"{FAL_QUEUE_BASE}/{FAL_ENDPOINT}"
-FAL_REQUEST_TIMEOUT = 120  # sekund — qwen uchun
+FAL_REQUEST_TIMEOUT = 120  # sekund
 FAL_OCR_TIMEOUT = max(10, int(os.environ.get("MAGIC_LAYERS_OCR_TIMEOUT_MS", 40_000)) // 1000)
 FAL_POLL_INTERVAL = 1.5    # sekund
 
 # Butun quvur uchun umumiy vaqt. gunicorn/nginx --timeout 300 dan kam bo'lishi shart.
 PIPELINE_BUDGET = max(60, int(os.environ.get("MAGIC_LAYERS_BUDGET_SECONDS", 250)))
 
-LAYER_NAMES = ["Orqa fon", "Asosiy mahsulot", "Bezaklar va belgilar", "Qo'shimcha elementlar"]
-LAYER_NAMES_WITH_TEXT = ["Orqa fon", "Asosiy mahsulot", "Matnlar va belgilar", "Qo'shimcha elementlar"]
+SAM_TIMEOUT = 75          # sekund — bitta obyekt
+ERASER_TIMEOUT = 100      # sekund
+
+# Qatlam fayllari shu prefiks ostida saqlanadi va faqat shu yerdan beriladi.
+LAYER_FILES_URL = "/api/layer-files/"
 
 
 def _fal_key() -> str:
@@ -91,10 +94,6 @@ def _prepare_image_source(image_source: str) -> str:
             return f"data:{mime};base64,{b64}"
 
     return image_source
-
-
-def _bytes_to_data_url(raw: bytes, mime: str = "image/png") -> str:
-    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
 def _download(url: str, timeout: float = 30) -> bytes:
@@ -194,144 +193,192 @@ def _fal_run(endpoint: str, payload: dict, timeout: float = FAL_REQUEST_TIMEOUT)
     raise GenerationError("Qatlamlarga ajratish vaqti tugadi (timeout)", status=504)
 
 
-def _result_images(result_data: dict) -> list[dict]:
-    return result_data.get("images") or (result_data.get("output") or {}).get("images") or []
+# ---------------------------------------------------------------------------
+#  Saqlash
+# ---------------------------------------------------------------------------
+
+def layers_dir(user_id) -> str:
+    return f"generated/user_{int(user_id)}/layers/"
+
+
+def store_layer_file(raw: bytes, user_id, kind: str, ext: str = "png") -> str:
+    """Faylni ``generated/user_<id>/layers/<kind>_<uuid>.<ext>`` ga saqlaydi.
+
+    Qaytaradi: ``/api/layer-files/<storage yo'li>`` (nisbiy; javobda _absolute).
+    Nom 128-bit tasodifiy uuid — taxmin qilib bo'lmaydi, shuning uchun endpoint
+    autentifikatsiyasiz (brauzer <img crossOrigin="anonymous"> cookie yubormaydi).
+    """
+    name = f"{layers_dir(user_id)}{kind}_{uuid.uuid4().hex}.{ext}"
+    saved = default_storage.save(name, ContentFile(raw))
+    return LAYER_FILES_URL + saved.replace("\\", "/")
+
+
+def _image_ext(raw: bytes) -> str:
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    return "png"
+
+
+def _store_base(image_bytes: bytes, user_id) -> str:
+    """Asl rasm nusxasi qatlamlar prefiksi ostida (boshqa media papkasida bo'lishi mumkin)."""
+    ext = _image_ext(image_bytes)
+    if ext == "png" and image_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+        image_bytes = te.encode_png(*te.decode_rgb(image_bytes))
+    return store_layer_file(image_bytes, user_id, "base", ext)
 
 
 # ---------------------------------------------------------------------------
 #  Bosqichlar
 # ---------------------------------------------------------------------------
 
-def _split_layers(image_url: str, num_layers: int, timeout: float) -> list[dict]:
-    try:
-        count = int(num_layers)
-    except (TypeError, ValueError):
-        count = 4
-    result_data = _fal_run(
-        FAL_ENDPOINT,
-        {
-            "image_url": image_url,
-            "num_layers": max(2, min(count, 8)),
-            "output_format": "png",
-        },
-        timeout=timeout,
-    )
-    raw_images = _result_images(result_data)
-    if not raw_images:
-        raise GenerationError("AI hech qanday qatlam qaytarmadi", status=502)
-    return raw_images
-
-
-def _store_layers(raw_images: list[dict], user_id: int, size: tuple[int, int], text_removed: bool) -> list[dict]:
-    from .serializers import _absolute
-
-    names = LAYER_NAMES if text_removed else LAYER_NAMES_WITH_TEXT
-    width, height = size
-    stored_layers = []
-
-    for idx, layer_info in enumerate(raw_images):
-        layer_url = layer_info.get("url")
-        if not layer_url:
-            continue
-        try:
-            layer_bytes = _download(layer_url)
-        except (requests.RequestException, GenerationError):
-            logger.warning("Qatlam rasmini yuklab bo'lmadi: %s", str(layer_url)[:120])
-            continue
-
-        filename = f"generated/user_{user_id}/layers/{uuid.uuid4().hex}.png"
-        saved_path = default_storage.save(filename, ContentFile(layer_bytes))
-        abs_url = _absolute(default_storage.url(saved_path))
-
-        stored_layers.append({
-            "id": f"layer_{idx + 1}_{uuid.uuid4().hex[:6]}",
-            "order": idx + 1,
-            "name": names[idx] if idx < len(names) else f"Qatlam {idx + 1}",
-            "url": abs_url,
-            "width": layer_info.get("width") or width,
-            "height": layer_info.get("height") or height,
-        })
-
-    if not stored_layers:
-        raise GenerationError("Qatlamlarni serverga saqlab bo'lmadi", status=502)
-    return stored_layers
-
-
-def _store_clean(png_bytes: bytes, user_id: int) -> str:
-    """Toza (matnsiz) rasmni media'ga saqlaydi. Nisbiy URL (/media/...) qaytaradi."""
-    filename = f"generated/user_{user_id}/layers/clean_{uuid.uuid4().hex}.png"
-    saved_path = default_storage.save(filename, ContentFile(png_bytes))
-    return default_storage.url(saved_path)
-
-
-def _detect_and_ocr(image_bytes: bytes, text_timeout: float) -> tuple[list[dict], list[dict]]:
-    """GPT matn aniqlash va Florence OCR — parallel. Ikkalasi ham xatoda bo'sh ro'yxat."""
+def _detect_and_ocr(image_bytes: bytes, text_timeout: float) -> tuple[list[dict], list[dict], list[dict]]:
+    """GPT (matn + obyektlar) va Florence OCR — parallel. Xatoda bo'sh ro'yxatlar."""
     use_ocr = bool(_fal_key())
     with ThreadPoolExecutor(max_workers=2) as pool:
-        gpt_future = pool.submit(tl.detect_text_blocks, image_bytes, text_timeout)
+        gpt_future = pool.submit(tl.detect_layout, image_bytes, text_timeout)
         ocr_future = (
             pool.submit(tl.run_ocr, image_bytes, _fal_run, FAL_OCR_ENDPOINT, min(FAL_OCR_TIMEOUT, text_timeout))
             if use_ocr else None
         )
         try:
-            blocks = gpt_future.result()
+            blocks, objects = gpt_future.result()
         except Exception as error:
-            logger.warning("Magic layers: matn aniqlash xatosi: %s", error)
-            blocks = []
+            logger.warning("Magic layers: aniqlash xatosi: %s", error)
+            blocks, objects = [], []
         try:
             ocr_lines = ocr_future.result() if ocr_future is not None else []
         except Exception as error:
             logger.warning("Magic layers: OCR xatosi: %s", error)
             ocr_lines = []
-    return blocks, ocr_lines
+    return blocks, objects, ocr_lines
 
 
-def _mock_decompose(image_source: str, user_id: int, separate_objects: bool = False) -> dict:
-    """Lokal testlar va balans yo'qligida frontendni sinash uchun soxta natija."""
-    logger.info("Mock rejimida qatlamlarga ajratilmoqda: user=%s", user_id)
-    width, height = 1080, 1440
-    if image_source.startswith("data:image/") or "/media/" in image_source:
+def _attach_text_cutouts(text_layers: list[dict], original_rgb, masks: dict, user_id) -> None:
+    """Har bir matn qatlamiga asl harflarning RGBA kesmasi (imageUrl/imageBox)."""
+    height, width = original_rgb.shape[:2]
+    for layer in text_layers:
+        layer["imageUrl"] = None
+        layer["imageBox"] = None
+        mask = masks.get(layer.get("id"))
+        source = layer.get("source")
+        if mask is None or not source:
+            continue
         try:
-            width, height = tl.image_size(_load_image_bytes(image_source))
-        except Exception:
-            pass
-    layers = []
-    if separate_objects:
-        layers = [{
-            "id": f"layer_{uuid.uuid4().hex[:8]}",
-            "order": 1,
-            "name": "Asosiy qatlam (MOCK)",
-            "url": image_source,
-            "width": width,
-            "height": height,
-        }]
+            x0, y0, x1, y1 = te.clamp_box(source["x"], source["y"], source["x"] + source["width"],
+                                          source["y"] + source["height"], width, height)
+            box = {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
+            png = ol.box_cutout(original_rgb, mask, box)
+            layer["imageUrl"] = store_layer_file(png, user_id, "txt")
+            layer["imageBox"] = box
+        except Exception as error:
+            logger.warning("Magic layers: matn kesmasi saqlanmadi (%s): %s", layer.get("id"), error)
+
+
+def _build_elements(pairs: list, clean_rgb, user_id) -> list[dict]:
+    """(obyekt, maska) → saqlangan RGBA elementlar; order: z bo'yicha (1 = eng pastki)."""
+    ranked = sorted(pairs, key=lambda item: (item[0].get("z", 0), -int(item[1].sum())))
+    # Oldindagi obyekt (masalan, mashina ustidagi badge) piksellari orqadagisidan olib tashlanadi —
+    # aks holda badge siljitilganda uning bo'lagi mashinada qolib ketadi.
+    in_front = None
+    visible: list = [None] * len(ranked)
+    for pos in range(len(ranked) - 1, -1, -1):
+        mask = ranked[pos][1]
+        visible[pos] = mask if in_front is None else (mask & ~in_front)
+        in_front = mask.copy() if in_front is None else (in_front | mask)
+    elements: list[dict] = []
+    for (obj, _full), mask in zip(ranked, visible):
+        if int(mask.sum()) < 64:
+            continue
+        try:
+            cut = ol.rgba_cutout(clean_rgb, mask)
+            if cut is None:
+                continue
+            png, box = cut
+            elements.append({
+                "id": f"el_{uuid.uuid4().hex[:10]}",
+                "name": obj.get("name") or "Element",
+                "kind": obj.get("kind") if obj.get("kind") in ("product", "graphic") else "graphic",
+                "url": store_layer_file(png, user_id, "el"),
+                **box,
+                "order": len(elements) + 1,
+            })
+        except Exception as error:
+            logger.warning("Magic layers: element saqlanmadi (%s): %s", obj.get("name"), error)
+    return elements
+
+
+def _result(base_url, background_url, clean_url, size, text_layers, elements, text_removed, objects_removed):
+    width, height = size
     return {
-        "baseUrl": image_source,
-        "cleanUrl": image_source,
-        "width": width,
-        "height": height,
-        "textLayers": tl.mock_text_layers(width, height),
-        "layers": layers,
-        "textRemoved": True,
+        "baseUrl": base_url,
+        "backgroundUrl": background_url,
+        "cleanUrl": clean_url,
+        "width": int(width),
+        "height": int(height),
+        "elements": elements,
+        "textLayers": text_layers,
+        "layers": [],  # v1/v2 maydoni — eski frontend uchun bo'sh
+        "textRemoved": bool(text_removed),
+        "objectsRemoved": bool(objects_removed),
         "layersVersion": LAYERS_VERSION,
     }
 
 
+def _mock_decompose(image_source: str, user_id: int) -> dict:
+    """Lokal testlar va balans yo'qligida frontendni sinash uchun soxta natija.
+
+    Fon = asl rasm, 1 ta element (markaz kesmasi), 2 ta matn qatlami (imageUrl kesmalari bilan).
+    """
+    logger.info("Mock rejimida qatlamlarga ajratilmoqda: user=%s", user_id)
+    width, height = 1080, 1440
+    try:
+        image_bytes = _load_image_bytes(image_source) if (
+            image_source.startswith("data:image/") or "/media/" in image_source) else None
+        rgb = te.decode_rgb(image_bytes)[0] if image_bytes else None
+    except Exception:
+        image_bytes, rgb = None, None
+    if rgb is None:
+        return _result(image_source, image_source, None, (width, height),
+                       [dict(layer, imageUrl=None, imageBox=None) for layer in tl.mock_text_layers(width, height)],
+                       [], True, False)
+
+    import numpy as np
+
+    height, width = rgb.shape[:2]
+    base_url = _store_base(image_bytes, user_id)
+    mask = np.zeros((height, width), dtype=bool)
+    mask[height // 4: height * 3 // 4, width // 4: width * 3 // 4] = True
+    png, box = ol.rgba_cutout(rgb, mask, pad=0)
+    elements = [{"id": f"el_{uuid.uuid4().hex[:10]}", "name": "Mahsulot (MOCK)", "kind": "product",
+                 "url": store_layer_file(png, user_id, "el"), **box, "order": 1}]
+    text_layers = tl.mock_text_layers(width, height)
+    for layer in text_layers:
+        src = layer["source"]
+        crop_mask = np.ones((src["height"], src["width"]), dtype=bool)
+        layer["imageUrl"] = store_layer_file(ol.box_cutout(rgb, crop_mask, src), user_id, "txt")
+        layer["imageBox"] = dict(src)
+    return _result(base_url, base_url, base_url, (width, height), text_layers, elements, True, False)
+
+
 def decompose_layers(image_source: str, user_id: int, num_layers: int = 4,
                      separate_objects: bool = False) -> dict:
-    """Rasm matnini tahrirlanadigan qatlamlarga aylantiradi (v3).
+    """Rasmni tahrirlanadigan qatlamlarga ajratadi (v4).
 
-    Qaytaradi: {"baseUrl", "cleanUrl", "width", "height", "textLayers", "layers",
-    "textRemoved", "layersVersion": 3}. ``cleanUrl`` — nisbiy media URL yoki None.
+    ``num_layers`` / ``separate_objects`` — eski API, e'tiborga olinmaydi (obyektlar har doim).
+    Qaytaradi: {"baseUrl", "backgroundUrl", "cleanUrl", "width", "height", "elements",
+    "textLayers", "layers": [], "textRemoved", "objectsRemoved", "layersVersion": 4}.
+    URL'lar — nisbiy ``/api/layer-files/...``.
     """
     if _is_mock():
-        return _mock_decompose(image_source, user_id, separate_objects)
-
-    if separate_objects:
-        _get_fal_key()  # kalit yo'q bo'lsa — darhol 503, OpenAI'ga pul sarflamasdan
+        return _mock_decompose(image_source, user_id)
 
     started = time.time()
     deadline = started + PIPELINE_BUDGET
+    timings: dict[str, float] = {}
 
     def remaining(reserve: float = 0) -> float:
         return max(5.0, deadline - time.time() - reserve)
@@ -342,12 +389,12 @@ def decompose_layers(image_source: str, user_id: int, num_layers: int = 4,
     except Exception:
         raise GenerationError("Slayd rasmini o'qib bo'lmadi", status=400)
     height, width = rgb.shape[:2]
+    base_url = _store_base(image_bytes, user_id)
 
-    # 1. Matn bloklari + OCR qutilari (parallel; xatolikda bo'sh ro'yxat)
+    # 1. Matn bloklari + obyektlar + OCR qutilari (parallel; xatolikda bo'sh ro'yxat)
     t0 = time.time()
-    reserve = 140 if separate_objects else 20
-    blocks, ocr_lines = _detect_and_ocr(image_bytes, min(tl.TEXT_DETECT_TIMEOUT, remaining(reserve)))
-    logger.info("Magic layers: aniqlash %.1fs, bloklar=%d, ocr=%d", time.time() - t0, len(blocks), len(ocr_lines))
+    blocks, objects, ocr_lines = _detect_and_ocr(image_bytes, min(tl.TEXT_DETECT_TIMEOUT, remaining(150)))
+    timings["detect"] = time.time() - t0
 
     text_layers: list[dict] = []
     if blocks:
@@ -357,36 +404,64 @@ def decompose_layers(image_source: str, user_id: int, num_layers: int = 4,
             logger.warning("Magic layers: qutilarni aniqlashtirib bo'lmadi, GPT qutilari: %s", error)
             text_layers = blocks
 
-    # 2. Matnni lokal o'chirish (asl rasm tegilmaydi; toza nusxa alohida fayl)
-    clean_url = None
-    clean_png = None
+    # 2. Matnni lokal o'chirish + asl harflar kesmalari
+    t0 = time.time()
+    clean_rgb, clean_url, text_removed = rgb, None, False
+    masks: dict = {}
     if text_layers:
-        t0 = time.time()
         try:
-            clean_png = te.erase_text(image_bytes, text_layers)
-            clean_url = _store_clean(clean_png, user_id)
+            clean_png, masks = te.erase_text_with_masks(image_bytes, text_layers)
+            clean_rgb = te.decode_rgb(clean_png)[0]
+            clean_url = store_layer_file(clean_png, user_id, "clean")
+            text_removed = True
         except Exception as error:
             logger.warning("Magic layers: matnni o'chirib bo'lmadi: %s", error)
-            clean_png, clean_url = None, None
-        logger.info("Magic layers: o'chirish %.1fs, ok=%s", time.time() - t0, bool(clean_url))
+            clean_rgb, clean_url, masks = rgb, None, {}
+    _attach_text_cutouts(text_layers, rgb, masks, user_id)
+    timings["text"] = time.time() - t0
 
-    # 3. Ixtiyoriy: obyektlarni ajratish (qwen) — toza rasmdan
-    stored_layers: list[dict] = []
-    if separate_objects:
-        split_source = _bytes_to_data_url(clean_png) if clean_png else _prepare_image_source(image_source)
-        t0 = time.time()
-        raw_images = _split_layers(split_source, num_layers, timeout=min(FAL_REQUEST_TIMEOUT, remaining(15)))
-        logger.info("Magic layers: qwen %.1fs, qatlamlar=%d", time.time() - t0, len(raw_images))
-        stored_layers = _store_layers(raw_images, user_id, (width, height), bool(clean_png))
+    # 3. Obyektlar (SAM2, textClean ustida)
+    t0 = time.time()
+    pairs: list = []
+    if objects and _fal_key():
+        try:
+            pairs = ol.segment_objects(
+                objects, ol.jpeg_data_url(clean_rgb), (width, height), _fal_run, _download,
+                timeout=min(SAM_TIMEOUT, remaining(40)), deadline=deadline - 40,
+            )
+        except Exception as error:
+            logger.warning("Magic layers: segmentatsiya ishlamadi: %s", error)
+            pairs = []
+    elements = _build_elements(pairs, clean_rgb, user_id) if pairs else []
+    timings["segment"] = time.time() - t0
 
-    logger.info("Magic layers: jami %.1fs user=%s", time.time() - started, user_id)
-    return {
-        "baseUrl": image_source,
-        "cleanUrl": clean_url,
-        "width": int(width),
-        "height": int(height),
-        "textLayers": text_layers,
-        "layers": stored_layers,
-        "textRemoved": bool(clean_url),
-        "layersVersion": LAYERS_VERSION,
-    }
+    # 4. Fon: obyektlar o'rni to'ldiriladi (faqat maska ichida)
+    t0 = time.time()
+    background_url = clean_url or base_url
+    objects_removed = False
+    method = "-"
+    if elements:
+        import numpy as np
+
+        union = np.zeros((height, width), dtype=bool)
+        for _obj, mask in pairs:
+            union |= mask
+        union = ol.dilate(union, ol.BACKGROUND_DILATE_PX)
+        try:
+            bg_rgb, method = ol.fill_background(
+                clean_rgb, union, _fal_run, _download, timeout=min(ERASER_TIMEOUT, remaining(5)),
+                use_fal=bool(_fal_key()),
+            )
+            background_url = store_layer_file(te.encode_png(bg_rgb), user_id, "bg")
+            objects_removed = True
+        except Exception as error:
+            logger.warning("Magic layers: fonni tiklab bo'lmadi: %s", error)
+    timings["background"] = time.time() - t0
+
+    logger.info(
+        "Magic layers v4: jami %.1fs (%s) user=%s matn=%d obyekt=%d/%d fon=%s",
+        time.time() - started, " ".join(f"{k}={v:.1f}s" for k, v in timings.items()),
+        user_id, len(text_layers), len(elements), len(objects), method,
+    )
+    return _result(base_url, background_url, clean_url, (width, height), text_layers, elements,
+                   text_removed, objects_removed)

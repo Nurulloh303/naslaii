@@ -6,7 +6,7 @@ from urllib.parse import quote, unquote
 
 from django.conf import settings as django_settings
 from django.core.files.storage import default_storage
-from django.http import HttpResponse
+from django.http import FileResponse, HttpResponse
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
@@ -22,7 +22,7 @@ from accounts.models import ApiKey
 
 from .analyze import analyze_image
 from .imaging import normalize_generated_image
-from .layers import LAYERS_VERSION, decompose_layers
+from .layers import LAYER_FILES_URL, LAYERS_VERSION, decompose_layers
 from .listing import generate_listing
 from .models import GenerationJob
 from .plan import build_plan
@@ -30,8 +30,8 @@ from .providers import GenerationError, _decode_data_url, _store, get_provider
 from .style_templates import load_style_templates, resolve_style_template_path, style_template_mime
 from .tasks import enqueue
 from .serializers import (
-    _absolute,
     GenerationCreateSerializer,
+    layers_fields,
     is_image_data_url,
     job_payload,
     project_payload,
@@ -611,12 +611,12 @@ def project_listing(request, pk: int):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def magic_layers_view(request, pk: int, variant: int):
-    """Magic Layers v3: slayddagi matnni joyida tahrirlash uchun tayyorlash.
+    """Magic Layers v4: slaydni Canva "Magic Layers" kabi qatlamlarga ajratadi.
 
-    Asl rasm (``baseUrl``) o'zgarmaydi. Matn bloklari OpenAI vision + Florence OCR
-    bilan topiladi, harflar lokal OpenCV bilan o'chirilgan nusxa — ``cleanUrl``.
-    ``separateObjects: true`` bo'lsa, toza rasm qo'shimcha ravishda qwen bilan rasm
-    qatlamlariga bo'linadi. v3 natijasi keshlanadi (``force`` — qayta hisoblash).
+    Javob: ``baseUrl`` (asl rasm), ``backgroundUrl`` (matn va obyektlarsiz, to'ldirilgan
+    fon), ``elements`` (har bir obyekt — RGBA PNG va joyi), ``textLayers`` (tahrirlanadigan
+    matn + asl harflar kesmasi ``imageUrl``/``imageBox``). Barcha fayl URL'lari
+    ``/api/layer-files/...`` orqali (CORS bilan). v4 natijasi keshlanadi (``force`` — qayta).
     """
     job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
     if job is None:
@@ -627,21 +627,16 @@ def magic_layers_view(request, pk: int, variant: int):
         return Response({"error": "RESULT_NOT_FOUND", "message": "Bunday slayd yo'q"}, status=404)
 
     target_result = dict(results[variant - 1])
-
     force = request.data.get("force") is True
-    separate_objects = request.data.get("separateObjects") is True
 
     def respond(data: dict, cached: bool = False) -> Response:
         payload = {
             "ok": True,
             "variant": variant,
-            "baseUrl": _absolute(str(data.get("baseUrl") or target_result.get("url") or ""), request),
-            "cleanUrl": _absolute(str(data["cleanUrl"]), request) if data.get("cleanUrl") else None,
+            **layers_fields({**data, "url": data.get("url") or target_result.get("url")}, request),
             "width": int(data.get("width") or target_result.get("width") or 0),
             "height": int(data.get("height") or target_result.get("height") or 0),
-            "textLayers": data.get("textLayers") or [],
             "layers": data.get("layers") or [],
-            "textRemoved": bool(data.get("textRemoved")),
             "layersVersion": data.get("layersVersion") or LAYERS_VERSION,
             "job": job_payload(job, request),
         }
@@ -649,12 +644,7 @@ def magic_layers_view(request, pk: int, variant: int):
             payload["cached"] = True
         return Response(payload)
 
-    # Kesh: faqat v3 natijasi; obyektlar so'ralgan bo'lsa — ular ham keshda bo'lishi kerak.
-    if (
-        not force
-        and target_result.get("layersVersion") == LAYERS_VERSION
-        and (not separate_objects or target_result.get("layers"))
-    ):
+    if not force and target_result.get("layersVersion") == LAYERS_VERSION:
         return respond(target_result, cached=True)
 
     image_url = str(target_result.get("url") or "")
@@ -666,11 +656,8 @@ def magic_layers_view(request, pk: int, variant: int):
     else:
         image_source = image_url
 
-    num_layers = request.data.get("numLayers") or 4
     try:
-        decomposed = decompose_layers(
-            image_source, user_id=request.user.pk, num_layers=num_layers, separate_objects=separate_objects,
-        )
+        decomposed = decompose_layers(image_source, user_id=request.user.pk)
     except GenerationError as error:
         return Response(
             {"error": error.code or "MAGIC_LAYERS_FAILED", "message": str(error)},
@@ -683,15 +670,19 @@ def magic_layers_view(request, pk: int, variant: int):
             status=502,
         )
 
-    # baseUrl bazada asl (nisbiy bo'lishi mumkin) manzil sifatida saqlanadi — domen o'zgarsa ham ishlaydi.
-    target_result["baseUrl"] = image_url
+    # URL'lar bazada nisbiy (/api/layer-files/...) saqlanadi — domen o'zgarsa ham ishlaydi.
+    base = decomposed.get("baseUrl")
+    target_result["baseUrl"] = base if str(base or "").startswith(LAYER_FILES_URL) else image_url
+    target_result["backgroundUrl"] = decomposed.get("backgroundUrl") or target_result["baseUrl"]
     target_result["cleanUrl"] = decomposed.get("cleanUrl")
     if decomposed.get("width") and decomposed.get("height"):
         target_result["width"] = decomposed["width"]
         target_result["height"] = decomposed["height"]
+    target_result["elements"] = decomposed.get("elements") or []
     target_result["textLayers"] = decomposed.get("textLayers") or []
     target_result["layers"] = decomposed.get("layers") or []
     target_result["textRemoved"] = bool(decomposed.get("textRemoved"))
+    target_result["objectsRemoved"] = bool(decomposed.get("objectsRemoved"))
     target_result["layersVersion"] = decomposed.get("layersVersion") or LAYERS_VERSION
     results[variant - 1] = target_result
     job.results = results
@@ -699,3 +690,37 @@ def magic_layers_view(request, pk: int, variant: int):
 
     return respond(target_result)
 
+
+# Faqat Magic Layers fayllari: generated/user_<id>/layers/<nom>.<kengaytma>.
+# Papka ichiga kirish, "..", mutlaq yo'llar va boshqa prefikslar mos kelmaydi.
+LAYER_FILE_RE = re.compile(r"^generated/user_\d+/layers/[A-Za-z0-9_-]{8,128}\.(png|jpg|jpeg|webp)$")
+LAYER_FILE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+
+
+def layer_file(request, path: str):
+    """Magic Layers fayli (CORS bilan). ``GET /api/layer-files/<yo'l>``.
+
+    Nega bu endpoint: nginx ``/media/`` ni o'zi beradi va CORS sarlavhasi qo'ymaydi,
+    frontend esa rasmlarni ``crossOrigin="anonymous"`` bilan canvas'ga yuklaydi —
+    sarlavhasiz canvas "tainted" bo'lib, eksport/o'chirish oq quti beradi. ``/api/``
+    Django orqali o'tadi, corsheaders ruxsat etilgan domenlarga sarlavha qo'yadi.
+
+    Autentifikatsiya yo'q: ``crossOrigin="anonymous"`` cookie yubormaydi. Himoya —
+    nom ichidagi 128-bit tasodifiy uuid (taxmin qilib bo'lmaydi) va qat'iy prefiks.
+    """
+    if request.method not in ("GET", "HEAD"):
+        return HttpResponse(status=405)
+    path = unquote(path or "")
+    if not LAYER_FILE_RE.match(path) or ".." in path:
+        return HttpResponse("Not found", status=404, content_type="text/plain")
+    try:
+        if not default_storage.exists(path):
+            return HttpResponse("Not found", status=404, content_type="text/plain")
+        handle = default_storage.open(path, "rb")
+    except (OSError, ValueError):
+        return HttpResponse("Not found", status=404, content_type="text/plain")
+    response = FileResponse(handle, content_type=LAYER_FILE_TYPES[path.rsplit(".", 1)[1].lower()])
+    response["Cache-Control"] = "public, max-age=2592000, immutable"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Cross-Origin-Resource-Policy"] = "cross-origin"
+    return response

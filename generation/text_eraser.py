@@ -462,15 +462,33 @@ def _add_grain(result: np.ndarray, original: np.ndarray, touched: np.ndarray, sa
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
-def erase_text(image_bytes: bytes, text_layers: list[dict]) -> bytes:
-    """Har bir qatlamning ``source`` qutisidagi harflarni o'chirib, PNG qaytaradi (asl o'lcham)."""
+def erase_text_with_masks(image_bytes: bytes, text_layers: list[dict]) -> tuple[bytes, dict[str, np.ndarray]]:
+    """``erase_text`` + har bir qatlam uchun harflar maskasi.
+
+    Maska — o'zgartirilgan piksellar (harf + kontur/soya/antialias, 3px kengaytirilgan),
+    qatlamning ``source`` to'rtburchagiga kesilgan bool massiv. v4 frontend tegilmagan
+    matnni aynan shu maska bo'yicha asl rasmdan kesilgan PNG sifatida ko'rsatadi.
+    """
     rgb, alpha = decode_rgb(image_bytes)
+    height, width = rgb.shape[:2]
     work = rgb.copy()
+    masks: dict[str, np.ndarray] = {}
     for layer in text_layers:
         source = layer.get("source") or layer
         core = layer if all(k in layer for k in ("x", "y", "width", "height")) else None
         try:
-            erase_region(work, source, layer.get("color"), core=core)
+            changed = erase_region(work, source, layer.get("color"), core=core)
         except Exception as error:  # bitta qutidagi xato butun rasmni buzmasin
             logger.warning("Matnni o'chirib bo'lmadi (%s): %s", layer.get("id"), error)
-    return encode_png(work, alpha)
+            continue
+        x0, y0, x1, y1 = clamp_box(source["x"], source["y"], source["x"] + source["width"],
+                                   source["y"] + source["height"], width, height)
+        crop = changed[y0:y1, x0:x1]
+        if crop.any() and layer.get("id"):
+            masks[layer["id"]] = crop.copy()
+    return encode_png(work, alpha), masks
+
+
+def erase_text(image_bytes: bytes, text_layers: list[dict]) -> bytes:
+    """Har bir qatlamning ``source`` qutisidagi harflarni o'chirib, PNG qaytaradi (asl o'lcham)."""
+    return erase_text_with_masks(image_bytes, text_layers)[0]

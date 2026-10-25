@@ -49,6 +49,44 @@ def _absolute(url: str, request=None) -> str:
     return f"{media_base}{clean_url}"
 
 
+def _abs_or_none(value, request=None):
+    return _absolute(str(value), request) if value else None
+
+
+def layers_fields(raw: dict, request=None) -> dict:
+    """Magic Layers maydonlari (v3/v4) — to'liq URL'lar bilan.
+
+    ``/magic_layers`` javobi va ``result_payload`` bir xil shaklni beradi.
+    v4 URL'lari bazada nisbiy ``/api/layer-files/...`` bo'lib saqlanadi.
+    """
+    text_layers = []
+    for layer in raw.get("textLayers") if isinstance(raw.get("textLayers"), list) else []:
+        if not isinstance(layer, dict):
+            continue
+        layer = dict(layer)
+        if "imageUrl" in layer:
+            layer["imageUrl"] = _abs_or_none(layer.get("imageUrl"), request)
+        text_layers.append(layer)
+
+    elements = []
+    for element in raw.get("elements") if isinstance(raw.get("elements"), list) else []:
+        if isinstance(element, dict):
+            element = dict(element)
+            element["url"] = _absolute(str(element.get("url") or ""), request)
+            elements.append(element)
+
+    base = _absolute(str(raw.get("baseUrl") or raw.get("url") or ""), request)
+    return {
+        "baseUrl": base,
+        "cleanUrl": _abs_or_none(raw.get("cleanUrl"), request),
+        "backgroundUrl": _abs_or_none(raw.get("backgroundUrl"), request),
+        "elements": elements,
+        "textLayers": text_layers,
+        "textRemoved": bool(raw.get("textRemoved")),
+        "objectsRemoved": bool(raw.get("objectsRemoved")),
+    }
+
+
 def result_payload(raw: dict, index: int, request=None) -> dict:
     """Одна готовая картинка в виде, который ждёт интерфейс.
 
@@ -76,11 +114,8 @@ def result_payload(raw: dict, index: int, request=None) -> dict:
         "referenceUsed": raw.get("referenceUsed"),
         "promptTier": raw.get("promptTier"),
         "layers": layers,
-        # Magic Layers v3: asl rasm, matnsiz nusxa va tahrirlanadigan matn qatlamlari.
-        "baseUrl": _absolute(str(raw.get("baseUrl") or raw.get("url") or ""), request),
-        "cleanUrl": _absolute(str(raw["cleanUrl"]), request) if raw.get("cleanUrl") else None,
-        "textLayers": raw.get("textLayers") if isinstance(raw.get("textLayers"), list) else [],
-        "textRemoved": bool(raw.get("textRemoved")),
+        # Magic Layers v3/v4: asl rasm, fon, elementlar va tahrirlanadigan matn qatlamlari.
+        **layers_fields(raw, request),
         "layersVersion": raw.get("layersVersion") or (1 if layers else None),
     }
 
