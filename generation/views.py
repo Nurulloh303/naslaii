@@ -30,6 +30,7 @@ from .providers import GenerationError, _decode_data_url, _store, get_provider
 from .style_templates import load_style_templates, resolve_style_template_path, style_template_mime
 from .tasks import enqueue
 from .serializers import (
+    _absolute,
     GenerationCreateSerializer,
     is_image_data_url,
     job_payload,
@@ -610,12 +611,12 @@ def project_listing(request, pk: int):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def magic_layers_view(request, pk: int, variant: int):
-    """Canva Magic Layers analogi: tayyor slayd rasmini alohida qatlamlarga ajratish.
+    """Magic Layers v3: slayddagi matnni joyida tahrirlash uchun tayyorlash.
 
-    Matn OpenAI vision bilan tahrirlanadigan textLayers'ga aylantiriladi, rasmdan
-    o'chiriladi (fal inpaint), qolgani fal-ai/qwen-image-layered orqali shaffof PNG
-    qatlamlarga bo'linadi. Agar slayd allaqachon v2 bilan ajratilgan bo'lsa,
-    keshdagi qatlamlar qaytariladi.
+    Asl rasm (``baseUrl``) o'zgarmaydi. Matn bloklari OpenAI vision + Florence OCR
+    bilan topiladi, harflar lokal OpenCV bilan o'chirilgan nusxa — ``cleanUrl``.
+    ``separateObjects: true`` bo'lsa, toza rasm qo'shimcha ravishda qwen bilan rasm
+    qatlamlariga bo'linadi. v3 natijasi keshlanadi (``force`` — qayta hisoblash).
     """
     job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
     if job is None:
@@ -627,21 +628,34 @@ def magic_layers_view(request, pk: int, variant: int):
 
     target_result = dict(results[variant - 1])
 
-    # Agar allaqachon qatlamlar ajratilgan bo'lsa va qayta ajratish majburiy bo'lmasa
     force = request.data.get("force") is True
-    existing_layers = target_result.get("layers")
-    # Eski (v1) kesh — matn qatlamlari yo'q, shuning uchun qayta hisoblanadi.
-    if existing_layers and not force and target_result.get("layersVersion") == LAYERS_VERSION:
-        return Response({
+    separate_objects = request.data.get("separateObjects") is True
+
+    def respond(data: dict, cached: bool = False) -> Response:
+        payload = {
             "ok": True,
-            "cached": True,
             "variant": variant,
-            "layers": existing_layers,
-            "textLayers": target_result.get("textLayers") or [],
-            "textRemoved": bool(target_result.get("textRemoved")),
-            "layersVersion": LAYERS_VERSION,
+            "baseUrl": _absolute(str(data.get("baseUrl") or target_result.get("url") or ""), request),
+            "cleanUrl": _absolute(str(data["cleanUrl"]), request) if data.get("cleanUrl") else None,
+            "width": int(data.get("width") or target_result.get("width") or 0),
+            "height": int(data.get("height") or target_result.get("height") or 0),
+            "textLayers": data.get("textLayers") or [],
+            "layers": data.get("layers") or [],
+            "textRemoved": bool(data.get("textRemoved")),
+            "layersVersion": data.get("layersVersion") or LAYERS_VERSION,
             "job": job_payload(job, request),
-        })
+        }
+        if cached:
+            payload["cached"] = True
+        return Response(payload)
+
+    # Kesh: faqat v3 natijasi; obyektlar so'ralgan bo'lsa — ular ham keshda bo'lishi kerak.
+    if (
+        not force
+        and target_result.get("layersVersion") == LAYERS_VERSION
+        and (not separate_objects or target_result.get("layers"))
+    ):
+        return respond(target_result, cached=True)
 
     image_url = str(target_result.get("url") or "")
     if not image_url:
@@ -654,7 +668,9 @@ def magic_layers_view(request, pk: int, variant: int):
 
     num_layers = request.data.get("numLayers") or 4
     try:
-        decomposed = decompose_layers(image_source, user_id=request.user.pk, num_layers=num_layers)
+        decomposed = decompose_layers(
+            image_source, user_id=request.user.pk, num_layers=num_layers, separate_objects=separate_objects,
+        )
     except GenerationError as error:
         return Response(
             {"error": error.code or "MAGIC_LAYERS_FAILED", "message": str(error)},
@@ -667,21 +683,19 @@ def magic_layers_view(request, pk: int, variant: int):
             status=502,
         )
 
-    target_result["layers"] = decomposed["layers"]
-    target_result["textLayers"] = decomposed["textLayers"]
-    target_result["textRemoved"] = decomposed["textRemoved"]
-    target_result["layersVersion"] = decomposed["layersVersion"]
+    # baseUrl bazada asl (nisbiy bo'lishi mumkin) manzil sifatida saqlanadi — domen o'zgarsa ham ishlaydi.
+    target_result["baseUrl"] = image_url
+    target_result["cleanUrl"] = decomposed.get("cleanUrl")
+    if decomposed.get("width") and decomposed.get("height"):
+        target_result["width"] = decomposed["width"]
+        target_result["height"] = decomposed["height"]
+    target_result["textLayers"] = decomposed.get("textLayers") or []
+    target_result["layers"] = decomposed.get("layers") or []
+    target_result["textRemoved"] = bool(decomposed.get("textRemoved"))
+    target_result["layersVersion"] = decomposed.get("layersVersion") or LAYERS_VERSION
     results[variant - 1] = target_result
     job.results = results
     job.save(update_fields=["results", "updated_at"])
 
-    return Response({
-        "ok": True,
-        "variant": variant,
-        "layers": decomposed["layers"],
-        "textLayers": decomposed["textLayers"],
-        "textRemoved": decomposed["textRemoved"],
-        "layersVersion": decomposed["layersVersion"],
-        "job": job_payload(job, request),
-    })
+    return respond(target_result)
 

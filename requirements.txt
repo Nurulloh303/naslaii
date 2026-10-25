@@ -11,3 +11,6 @@ dnspython>=2.6
 # прямо в запросе — так работают тесты и локальная разработка под Windows,
 # где нет ни Redis, ни нормального воркера.
 celery[redis]>=5.4,<6.0
+# Magic Layers v3: matnni rasmdan lokal o'chirish (AI'siz, mahsulot o'zgarmaydi).
+numpy>=1.26
+opencv-python-headless>=4.9

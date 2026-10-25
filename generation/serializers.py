@@ -76,7 +76,9 @@ def result_payload(raw: dict, index: int, request=None) -> dict:
         "referenceUsed": raw.get("referenceUsed"),
         "promptTier": raw.get("promptTier"),
         "layers": layers,
-        # Magic Layers v2: tahrirlanadigan matn qatlamlari (bo'lmasa — bo'sh).
+        # Magic Layers v3: asl rasm, matnsiz nusxa va tahrirlanadigan matn qatlamlari.
+        "baseUrl": _absolute(str(raw.get("baseUrl") or raw.get("url") or ""), request),
+        "cleanUrl": _absolute(str(raw["cleanUrl"]), request) if raw.get("cleanUrl") else None,
         "textLayers": raw.get("textLayers") if isinstance(raw.get("textLayers"), list) else [],
         "textRemoved": bool(raw.get("textRemoved")),
         "layersVersion": raw.get("layersVersion") or (1 if layers else None),

@@ -829,14 +829,14 @@ def _png_data_url(width=108, height=144, color=(30, 90, 200)):
 
 
 class TextLayersParsingTests(TestCase):
-    """Magic Layers v2: GPT javobi → textLayers (px), maska."""
+    """Magic Layers v3: GPT javobi → textLayers (px), shrift xaritasi, o'lcham."""
 
     def test_normalized_boxes_become_pixels(self):
         from generation.text_layers import parse_text_blocks
 
         payload = {"blocks": [{
             "text": "Oʻzbekcha gʻaroyib\\nmatn", "x": 0.1, "y": 0.05, "w": 0.8, "h": 0.1,
-            "font_size_px": 60, "font_weight": 750, "color": "fff", "align": "CENTER",
+            "font_style": "sans", "geometric": True, "font_weight": 750, "color": "fff", "align": "CENTER",
             "on_plate": True, "plate_color": "#ff0000", "uppercase": "true",
         }]}
         [layer] = parse_text_blocks(payload, 1080, 1440)
@@ -844,15 +844,28 @@ class TextLayersParsingTests(TestCase):
         self.assertTrue(layer["id"].startswith("text_"))
         self.assertEqual(layer["text"], "Oʻzbekcha gʻaroyib\nmatn")
         self.assertEqual((layer["x"], layer["y"], layer["width"], layer["height"]), (108, 72, 864, 144))
-        self.assertEqual(layer["fontSize"], 60)
         self.assertIn(layer["fontWeight"], (700, 800))
         self.assertEqual(layer["color"], "#FFFFFF")
         self.assertEqual(layer["align"], "center")
-        self.assertEqual(layer["background"], "#FF0000")
+        self.assertIsNone(layer["background"], "v3: plashka rasmda qoladi")
         self.assertTrue(layer["uppercase"])
-        self.assertEqual(layer["fontFamily"], "Inter")
-        self.assertEqual(layer["lineHeight"], 1.15)
+        self.assertEqual(layer["fontFamily"], "Montserrat")
+        self.assertEqual(layer["letterSpacing"], 0.0)
         self.assertEqual(layer["rotation"], 0)
+        self.assertEqual(layer["source"], {"x": 108, "y": 72, "width": 864, "height": 144})
+        # 2 qator, bosh harflar: 144 = (1·1.15 + 0.70)·fs → fs ≈ 78
+        self.assertTrue(70 <= layer["fontSize"] <= 85, layer["fontSize"])
+
+    def test_product_labels_skipped_and_script_kept(self):
+        from generation.text_layers import parse_text_blocks
+
+        payload = {"blocks": [
+            {"text": "BRAND", "x": 0.4, "y": 0.5, "w": 0.1, "h": 0.02, "product_label": True},
+            {"text": "Dam olish uchun ideal", "x": 0.1, "y": 0.1, "w": 0.5, "h": 0.04, "font_style": "condensed"},
+        ]}
+        [layer] = parse_text_blocks(payload, 1080, 1440)
+        self.assertEqual(layer["text"], "Dam olish uchun ideal")
+        self.assertEqual(layer["fontFamily"], "Oswald")
 
     def test_json_string_pixels_fallback_and_clamping(self):
         from generation.text_layers import parse_text_blocks
@@ -866,8 +879,49 @@ class TextLayersParsingTests(TestCase):
         self.assertLessEqual(layer["y"] + layer["height"], 1440)
         self.assertEqual(layer["color"], "#000000")
         self.assertEqual(layer["align"], "left")
-        self.assertIsNone(layer["background"])
+        self.assertEqual(layer["fontFamily"], "Inter")
         self.assertGreaterEqual(layer["fontSize"], 8)
+
+    def test_font_family_mapping(self):
+        from generation.text_layers import FONT_FAMILIES, map_font_family
+
+        self.assertEqual(map_font_family("condensed", 700), "Oswald")
+        self.assertEqual(map_font_family("condensed", 800, display=True), "Anton")
+        self.assertEqual(map_font_family("condensed", 900), "Anton")
+        self.assertEqual(map_font_family("sans", 400), "Inter")
+        self.assertEqual(map_font_family("sans", 800), "Montserrat")
+        self.assertEqual(map_font_family("sans", 800, geometric=False), "Inter")
+        self.assertEqual(map_font_family("serif", 700), "Playfair Display")
+        self.assertEqual(map_font_family("rounded", 700), "Nunito")
+        self.assertEqual(map_font_family("script", 400), "Caveat")
+        self.assertEqual(map_font_family("comic", 400), "Inter")
+        self.assertEqual(map_font_family(None, 400), "Inter")
+        for style in ("condensed", "sans", "serif", "rounded", "script", "x"):
+            self.assertIn(map_font_family(style, 700), FONT_FAMILIES)
+
+    def test_font_size_from_box_height(self):
+        from generation.text_layers import compute_font_size
+
+        # Bir qator bosh harf: siyoh balandligi ≈ 0.73·fs (Inter)
+        size, lh = compute_font_size("SALOM", 73, "Inter", True)
+        self.assertTrue(95 <= size <= 105, size)
+        self.assertEqual(lh, 1.15)
+        # Tushirmali kichik harflar: ≈ 0.97·fs
+        size, _ = compute_font_size("yetkazib", 97, "Inter", False)
+        self.assertTrue(92 <= size <= 108, size)
+        # OCR qator qadami ma'lum: lineHeight shundan
+        size, lh = compute_font_size("AAA\nBBB", 73 + 120, "Inter", True, line_pitch=120)
+        self.assertTrue(95 <= size <= 105, size)
+        self.assertAlmostEqual(lh, 1.2, delta=0.05)
+
+    def test_prompt_forbids_transliteration(self):
+        from generation.text_layers import build_prompt
+
+        prompt = build_prompt(1080, 1440)
+        self.assertIn("1080x1440", prompt)
+        self.assertIn("NEVER transliterate", prompt)
+        self.assertIn("font_style", prompt)
+        self.assertIn("product_label", prompt)
 
     def test_detect_text_blocks_calls_openai_and_converts(self):
         import json
@@ -877,9 +931,8 @@ class TextLayersParsingTests(TestCase):
         from generation.text_layers import detect_text_blocks
 
         content = json.dumps({"blocks": [{"text": "Chegirma 50%", "x": 0.5, "y": 0.5, "w": 0.25, "h": 0.05,
-                                          "font_size_px": 5, "font_weight": 800, "color": "#112233",
-                                          "align": "right", "on_plate": False, "plate_color": "#000000",
-                                          "uppercase": False}]})
+                                          "font_style": "serif", "font_weight": 800, "color": "#112233",
+                                          "align": "right", "uppercase": False}]})
         response = MagicMock(ok=True)
         response.json.return_value = {"choices": [{"message": {"content": content}}]}
 
@@ -891,7 +944,7 @@ class TextLayersParsingTests(TestCase):
         self.assertEqual(body["response_format"], {"type": "json_object"})
         self.assertIn("200x400", body["messages"][0]["content"][0]["text"])
         self.assertEqual((layer["x"], layer["y"], layer["width"], layer["height"]), (100, 200, 50, 20))
-        self.assertIsNone(layer["background"], "on_plate=false bo'lsa plashka rangi yo'q")
+        self.assertEqual(layer["fontFamily"], "Playfair Display")
         self.assertEqual(layer["align"], "right")
 
     def test_detect_without_key_or_on_error_returns_empty(self):
@@ -908,16 +961,187 @@ class TextLayersParsingTests(TestCase):
                 patch("generation.text_layers.requests.post", side_effect=requests.ConnectionError("down")):
             self.assertEqual(detect_text_blocks(_png_bytes()), [])
 
-    def test_mask_covers_only_dilated_glyph_boxes(self):
-        from generation.text_layers import build_text_mask
 
-        mask = build_text_mask((200, 200), [{"x": 50, "y": 50, "width": 40, "height": 20}], dilate=10)
-        self.assertEqual(mask.mode, "L")
-        self.assertEqual(mask.size, (200, 200))
-        self.assertEqual(mask.getpixel((60, 60)), 255)   # harf ichida
-        self.assertEqual(mask.getpixel((42, 42)), 255)   # kengaytirilgan chet
-        self.assertEqual(mask.getpixel((35, 60)), 0)     # chetdan tashqari
-        self.assertEqual(mask.getpixel((150, 150)), 0)   # fon / plashka
+class OcrMatchingTests(TestCase):
+    """Florence-2 OCR javobini o'qish va GPT bloklariga biriktirish."""
+
+    def _layer(self, text, x, y, w, h):
+        return {"id": "t", "text": text, "x": x, "y": y, "width": w, "height": h, "color": "#000000",
+                "fontFamily": "Inter", "uppercase": False}
+
+    def test_parse_ocr_formats(self):
+        from generation.text_layers import parse_ocr_results
+
+        dict_boxes = {"results": {"quad_boxes": [{"x": 10, "y": 20, "w": 100, "h": 30, "label": "</s>SALOM"}]}}
+        [line] = parse_ocr_results(dict_boxes, 1080, 1440)
+        self.assertEqual((line["x0"], line["y0"], line["x1"], line["y1"]), (10, 20, 110, 50))
+        self.assertEqual(line["text"], "SALOM")
+
+        flat = {"results": {"quad_boxes": [[10, 20, 110, 21, 109, 50, 9, 49]], "labels": ["Salom"]}}
+        [line] = parse_ocr_results(flat, 1080, 1440)
+        self.assertEqual((line["x0"], line["y0"], line["x1"], line["y1"]), (9, 20, 110, 50))
+        self.assertEqual(line["text"], "Salom")
+
+        points = {"results": {"quad_boxes": [{"points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.1},
+                                                         {"x": 0.2, "y": 0.2}, {"x": 0.1, "y": 0.2}],
+                                              "label": "x"}]}}
+        [line] = parse_ocr_results(points, 1000, 1000)
+        self.assertEqual((round(line["x0"]), round(line["y1"])), (100, 200))
+
+        self.assertEqual(parse_ocr_results({"results": "broken"}, 10, 10), [])
+        self.assertEqual(parse_ocr_results(None, 10, 10), [])
+
+    def test_lines_matched_by_position_and_text_then_unioned(self):
+        from generation.text_layers import match_ocr_lines
+
+        layers = [
+            self._layer("DAM OLISH UCHUN\nIDEAL TANLOV", 100, 100, 800, 200),
+            self._layer("Yetkazib berish bepul", 100, 1200, 600, 50),
+        ]
+        ocr = [
+            {"text": "DAM OLISH UCHUN", "x0": 80, "y0": 95, "x1": 930, "y1": 190},
+            {"text": "IDEAL TANLOV", "x0": 200, "y0": 210, "x1": 800, "y1": 300},
+            # GPT qutisi butunlay siljigan, lekin matn deyarli bir xil
+            {"text": "Yetkazib berish bepul", "x0": 120, "y0": 1100, "x1": 720, "y1": 1150},
+            # Mahsulotdagi yozuv — hech kimga mos emas
+            {"text": "BRANDX", "x0": 500, "y0": 700, "x1": 600, "y1": 730},
+        ]
+        matches = match_ocr_lines(layers, ocr)
+        self.assertEqual([ln["text"] for ln in matches[0]], ["DAM OLISH UCHUN", "IDEAL TANLOV"])
+        self.assertEqual([ln["text"] for ln in matches[1]], ["Yetkazib berish bepul"])
+        self.assertEqual(sum(len(v) for v in matches.values()), 3)
+
+    def test_garbled_ocr_inside_box_still_matches(self):
+        from generation.text_layers import match_ocr_lines
+
+        layers = [self._layer("Oʻzbekiston boʻylab", 100, 100, 600, 60)]
+        ocr = [{"text": "Ozbekiston bo'ylab", "x0": 110, "y0": 105, "x1": 690, "y1": 150}]
+        self.assertEqual(len(match_ocr_lines(layers, ocr)[0]), 1)
+
+    def test_refine_uses_ocr_union_then_tightens(self):
+        import numpy as np
+        from PIL import Image, ImageDraw
+
+        from generation.text_layers import refine_layers
+
+        img = Image.new("RGB", (600, 400), (240, 240, 240))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([100, 100, 400, 140], fill=(0, 0, 0))   # "1-qator"
+        draw.rectangle([100, 170, 300, 210], fill=(0, 0, 0))   # "2-qator"
+        rgb = np.array(img)
+        layer = self._layer("SALOM\nDUNYO", 50, 50, 200, 50)  # GPT qutisi noto'g'ri
+        layer["uppercase"] = True
+        ocr = [
+            {"text": "SALOM", "x0": 96, "y0": 96, "x1": 404, "y1": 144},
+            {"text": "DUNYO", "x0": 96, "y0": 166, "x1": 304, "y1": 214},
+        ]
+        [out] = refine_layers(rgb, [layer], ocr)
+        self.assertEqual((out["x"], out["y"], out["width"], out["height"]), (100, 100, 301, 111))
+        self.assertLessEqual(out["source"]["x"], 100 - 6)
+        self.assertGreaterEqual(out["source"]["x"] + out["source"]["width"], 401 + 6)
+        self.assertGreater(out["lineHeight"], 1.0)
+
+    def test_refine_without_ocr_tightens_gpt_box(self):
+        import numpy as np
+        from PIL import Image, ImageDraw
+
+        from generation.text_layers import refine_layers
+
+        img = Image.new("RGB", (600, 400), (20, 60, 200))
+        ImageDraw.Draw(img).rectangle([100, 100, 300, 140], fill=(255, 255, 255))
+        layer = self._layer("SALOM", 110, 108, 170, 28)   # glyflarni kesib qo'ygan
+        layer["color"] = "#FFFFFF"
+        [out] = refine_layers(np.array(img), [layer], [])
+        self.assertEqual((out["x"], out["y"], out["width"], out["height"]), (100, 100, 201, 41))
+
+
+class TextEraserTests(TestCase):
+    """Lokal OpenCV eraser: harflar o'chadi, qolgan piksellar bayt-ma-bayt bir xil."""
+
+    def _plate_image(self):
+        import io
+
+        from PIL import Image, ImageDraw, ImageFont
+
+        img = Image.new("RGB", (400, 300), (30, 120, 200))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle([60, 80, 340, 200], 20, fill=(255, 212, 0))
+        font = ImageFont.load_default(size=48)
+        draw.text((90, 110), "SALE 50%", font=font, fill=(0, 0, 0))
+        bbox = draw.textbbox((90, 110), "SALE 50%", font=font)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue(), bbox
+
+    def test_plate_text_erased_and_rest_identical(self):
+        import io
+
+        import numpy as np
+        from PIL import Image
+
+        from generation.text_eraser import erase_text, pad_box, source_pad
+
+        png, bbox = self._plate_image()
+        box = {"x": bbox[0], "y": bbox[1], "width": bbox[2] - bbox[0], "height": bbox[3] - bbox[1]}
+        layer = {"id": "t", "color": "#000000", **box, "source": pad_box(box, source_pad(box["height"]), 400, 300)}
+        out = erase_text(png, [layer])
+
+        before = np.array(Image.open(io.BytesIO(png)).convert("RGB")).astype(int)
+        after = np.array(Image.open(io.BytesIO(out)).convert("RGB")).astype(int)
+        self.assertEqual(after.shape, before.shape)
+
+        src = layer["source"]
+        region = after[src["y"]:src["y"] + src["height"], src["x"]:src["x"] + src["width"]]
+        diff = np.abs(region - np.array([255, 212, 0])).max(axis=2)
+        self.assertGreater((diff <= 12).mean(), 0.995, "matn joyi plashka rangida bo'lishi kerak")
+        self.assertFalse((region.sum(axis=2) < 200).any(), "qora harf qolmasligi kerak")
+
+        outside = np.ones(before.shape[:2], dtype=bool)
+        outside[src["y"]:src["y"] + src["height"], src["x"]:src["x"] + src["width"]] = False
+        self.assertTrue((after[outside] == before[outside]).all(), "source'dan tashqarisi o'zgarmaydi")
+        # Plashka chetlari ham joyida
+        self.assertEqual(tuple(after[85, 200]), (255, 212, 0))
+        self.assertEqual(tuple(after[10, 10]), (30, 120, 200))
+
+    def test_textured_background_uses_inpaint_and_stays_inside_source(self):
+        import io
+
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFont
+
+        from generation.text_eraser import erase_text
+
+        rng = np.random.default_rng(0)
+        yy, xx = np.mgrid[0:300, 0:400]
+        base = np.stack([80 + yy * 0.4, 100 + xx * 0.2, 160 - yy * 0.2], axis=2) + rng.normal(0, 10, (300, 400, 3))
+        img = Image.fromarray(np.clip(base, 0, 255).astype(np.uint8))
+        ImageDraw.Draw(img).text((80, 120), "Yangi", font=ImageFont.load_default(size=56), fill=(255, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        source = {"x": 70, "y": 110, "width": 200, "height": 80}
+        out = erase_text(buf.getvalue(), [{"id": "t", "color": "#FFFFFF", "source": source}])
+
+        before = np.array(img).astype(int)
+        after = np.array(Image.open(io.BytesIO(out)).convert("RGB")).astype(int)
+        region = after[110:190, 70:270]
+        self.assertLess(int((region.min(axis=2) > 235).sum()), 15, "oq harflar qolmasligi kerak")
+        outside = np.ones((300, 400), dtype=bool)
+        outside[110:190, 70:270] = False
+        self.assertTrue((after[outside] == before[outside]).all())
+
+    def test_tighten_ignores_plate_edges(self):
+        import numpy as np
+        from PIL import Image, ImageDraw
+
+        from generation.text_eraser import tighten_box
+
+        img = Image.new("RGB", (500, 300), (240, 240, 240))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([50, 80, 450, 220], fill=(220, 30, 60))      # plashka
+        draw.rectangle([120, 120, 380, 180], fill=(255, 255, 255))  # "matn"
+        rgb = np.array(img)
+        tight = tighten_box(rgb, {"x": 130, "y": 128, "width": 230, "height": 45}, text_color="#FFFFFF")
+        self.assertEqual(tight, {"x": 120, "y": 120, "width": 261, "height": 61})
 
 
 class MagicLayersPipelineTests(TestCase):
@@ -927,18 +1151,71 @@ class MagicLayersPipelineTests(TestCase):
         self._media = tempfile.TemporaryDirectory()
         self.addCleanup(self._media.cleanup)
 
-    def _env(self):
+    def _env(self, **extra):
         import os
         from unittest.mock import patch
 
-        return patch.dict(os.environ, {"FAL_KEY": "fal-test", "FAL_MOCK": "0"})
+        return patch.dict(os.environ, {"FAL_KEY": "fal-test", "FAL_MOCK": "0", **extra})
+
+    def _text_image(self):
+        import base64
+        import io
+
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", (300, 200), (30, 90, 200))
+        ImageDraw.Draw(img).rectangle([40, 40, 200, 70], fill=(255, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
     def _blocks(self):
-        return [{"id": "text_abc", "text": "Salom", "x": 10, "y": 10, "width": 40, "height": 20,
+        return [{"id": "text_abc", "text": "SALOM", "x": 45, "y": 45, "width": 140, "height": 22,
                  "fontSize": 18, "fontWeight": 700, "color": "#FFFFFF", "align": "left",
-                 "fontFamily": "Inter", "lineHeight": 1.15, "uppercase": False, "background": None, "rotation": 0}]
+                 "fontFamily": "Inter", "lineHeight": 1.15, "letterSpacing": 0.0, "uppercase": True,
+                 "background": None, "rotation": 0, "source": {"x": 45, "y": 45, "width": 140, "height": 22}}]
 
-    def test_inpaint_failure_falls_back_to_original_image(self):
+    def test_default_path_erases_locally_without_inpaint_or_qwen(self):
+        import io
+        from unittest.mock import patch
+
+        from django.core.files.storage import default_storage
+        from django.test import override_settings
+        from PIL import Image
+
+        from generation import layers
+
+        source = self._text_image()
+        calls = []
+
+        def fake_fal(endpoint, payload, timeout=0):
+            calls.append(endpoint)
+            if endpoint == layers.FAL_OCR_ENDPOINT:
+                return {"results": {"quad_boxes": [{"x": 38, "y": 38, "w": 165, "h": 35, "label": "SALOM"}]}}
+            raise AssertionError(f"kutilmagan fal chaqiruvi: {endpoint}")
+
+        with self._env(), override_settings(MEDIA_ROOT=self._media.name), \
+                patch("generation.layers.tl.detect_text_blocks", return_value=self._blocks()), \
+                patch("generation.layers._fal_run", side_effect=fake_fal):
+            out = layers.decompose_layers(source, user_id=1)
+
+            self.assertEqual(calls, [layers.FAL_OCR_ENDPOINT])
+            self.assertEqual(out["layersVersion"], 3)
+            self.assertEqual(out["layers"], [])
+            self.assertEqual(out["baseUrl"], source)
+            self.assertEqual((out["width"], out["height"]), (300, 200))
+            self.assertTrue(out["textRemoved"])
+            [text] = out["textLayers"]
+            self.assertEqual((text["x"], text["y"], text["width"], text["height"]), (40, 40, 161, 31))
+            self.assertIsNone(text["background"])
+            relative = out["cleanUrl"].split("/media/", 1)[1]
+            with default_storage.open(relative, "rb") as f:
+                clean = Image.open(io.BytesIO(f.read())).convert("RGB")
+        self.assertEqual(clean.size, (300, 200))
+        self.assertEqual(clean.getpixel((120, 55)), (30, 90, 200))   # matn joyi — fon rangi
+        self.assertEqual(clean.getpixel((280, 180)), (30, 90, 200))  # qolgani — asl
+
+    def test_ocr_failure_falls_back_to_gpt_boxes(self):
         from unittest.mock import patch
 
         from django.test import override_settings
@@ -946,97 +1223,110 @@ class MagicLayersPipelineTests(TestCase):
         from generation import layers
         from generation.providers import GenerationError
 
-        source = _png_data_url()
+        def fake_fal(endpoint, payload, timeout=0):
+            raise GenerationError("ocr down", status=502)
+
+        with self._env(), override_settings(MEDIA_ROOT=self._media.name), \
+                patch("generation.layers.tl.detect_text_blocks", return_value=self._blocks()), \
+                patch("generation.layers._fal_run", side_effect=fake_fal):
+            out = layers.decompose_layers(self._text_image(), user_id=1)
+
+        [text] = out["textLayers"]
+        self.assertEqual((text["x"], text["y"], text["width"], text["height"]), (40, 40, 161, 31))
+        self.assertTrue(out["textRemoved"])
+
+    def test_no_fal_key_still_edits_text(self):
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from generation import layers
+
+        with self._env(FAL_KEY=""), override_settings(MEDIA_ROOT=self._media.name), \
+                patch("generation.layers.tl.detect_text_blocks", return_value=self._blocks()), \
+                patch("generation.layers._fal_run") as fal:
+            out = layers.decompose_layers(self._text_image(), user_id=1)
+        self.assertFalse(fal.called)
+        self.assertEqual(len(out["textLayers"]), 1)
+        self.assertTrue(out["cleanUrl"])
+
+    def test_text_detection_failure_returns_empty_text(self):
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from generation import layers
+
+        with self._env(), override_settings(MEDIA_ROOT=self._media.name), \
+                patch("generation.layers.tl.detect_text_blocks", return_value=[]), \
+                patch("generation.layers._fal_run", return_value={"results": {"quad_boxes": []}}):
+            out = layers.decompose_layers(_png_data_url(), user_id=1)
+
+        self.assertEqual(out["textLayers"], [])
+        self.assertIsNone(out["cleanUrl"])
+        self.assertFalse(out["textRemoved"])
+        self.assertEqual(out["layers"], [])
+
+    def test_eraser_crash_never_500(self):
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from generation import layers
+
+        with self._env(), override_settings(MEDIA_ROOT=self._media.name), \
+                patch("generation.layers.tl.detect_text_blocks", return_value=self._blocks()), \
+                patch("generation.layers._fal_run", return_value={}), \
+                patch("generation.layers.te.erase_text", side_effect=RuntimeError("boom")):
+            out = layers.decompose_layers(self._text_image(), user_id=1)
+        self.assertIsNone(out["cleanUrl"])
+        self.assertFalse(out["textRemoved"])
+        self.assertEqual(len(out["textLayers"]), 1)
+
+    def test_separate_objects_runs_qwen_on_clean_image(self):
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from generation import layers
+
+        source = self._text_image()
         layer_png = _png_data_url(color=(0, 0, 0))
         calls = []
 
         def fake_fal(endpoint, payload, timeout=0):
             calls.append((endpoint, payload))
-            if endpoint == layers.FAL_INPAINT_ENDPOINT:
-                raise GenerationError("inpaint down", status=502)
+            if endpoint == layers.FAL_OCR_ENDPOINT:
+                return {"results": {"quad_boxes": []}}
             return {"images": [{"url": layer_png}, {"url": layer_png}]}
 
         with self._env(), override_settings(MEDIA_ROOT=self._media.name), \
                 patch("generation.layers.tl.detect_text_blocks", return_value=self._blocks()), \
                 patch("generation.layers._fal_run", side_effect=fake_fal):
-            out = layers.decompose_layers(source, user_id=1)
+            out = layers.decompose_layers(source, user_id=1, separate_objects=True)
 
-        self.assertFalse(out["textRemoved"])
-        self.assertEqual(out["layersVersion"], 2)
-        self.assertEqual(len(out["textLayers"]), 1)
+        qwen = [payload for endpoint, payload in calls if endpoint == layers.FAL_ENDPOINT]
+        self.assertEqual(len(qwen), 1)
+        self.assertNotEqual(qwen[0]["image_url"], source, "qwen toza rasmda ishlashi kerak")
         self.assertEqual(len(out["layers"]), 2)
         self.assertEqual(out["layers"][0]["name"], "Orqa fon")
-        qwen_payload = calls[-1][1]
-        self.assertEqual(calls[-1][0], layers.FAL_ENDPOINT)
-        self.assertEqual(qwen_payload["image_url"], source, "qwen asl rasmda ishlashi kerak")
 
-    def test_successful_inpaint_feeds_clean_image_to_qwen_at_original_size(self):
-        import base64
-        import io
-        from unittest.mock import patch
-
-        from django.test import override_settings
-        from PIL import Image
-
-        from generation import layers
-
-        source = _png_data_url(108, 144)
-        # Fill modeli boshqa o'lchamda qaytardi — biz asl o'lchamga qaytaramiz.
-        inpainted = _png_data_url(64, 64, color=(255, 0, 0))
-        layer_png = _png_data_url(color=(0, 0, 0))
-        calls = []
-
-        def fake_fal(endpoint, payload, timeout=0):
-            calls.append((endpoint, payload))
-            if endpoint == layers.FAL_INPAINT_ENDPOINT:
-                return {"images": [{"url": inpainted}]}
-            return {"images": [{"url": layer_png}]}
-
-        with self._env(), override_settings(MEDIA_ROOT=self._media.name), \
-                patch("generation.layers.tl.detect_text_blocks", return_value=self._blocks()), \
-                patch("generation.layers._fal_run", side_effect=fake_fal):
-            out = layers.decompose_layers(source, user_id=1)
-
-        self.assertTrue(out["textRemoved"])
-        inpaint_payload = calls[0][1]
-        self.assertTrue(inpaint_payload["mask_url"].startswith("data:image/png;base64,"))
-        self.assertIn("no text", inpaint_payload["prompt"])
-        clean_url = calls[1][1]["image_url"]
-        self.assertNotEqual(clean_url, source)
-        clean = Image.open(io.BytesIO(base64.b64decode(clean_url.split(",", 1)[1])))
-        self.assertEqual(clean.size, (108, 144))
-        self.assertEqual(clean.getpixel((25, 18))[:3], (255, 0, 0))     # matn joyi — inpaint
-        self.assertEqual(clean.getpixel((100, 130))[:3], (30, 90, 200))  # qolgani — asl rasm
-
-    def test_text_detection_failure_returns_image_layers_only(self):
-        from unittest.mock import patch
-
-        from django.test import override_settings
-
-        from generation import layers
-
-        layer_png = _png_data_url(color=(0, 0, 0))
-        with self._env(), override_settings(MEDIA_ROOT=self._media.name), \
-                patch("generation.layers.tl.detect_text_blocks", return_value=[]), \
-                patch("generation.layers._fal_run", return_value={"images": [{"url": layer_png}]}) as fal:
-            out = layers.decompose_layers(_png_data_url(), user_id=1)
-
-        self.assertEqual(out["textLayers"], [])
-        self.assertFalse(out["textRemoved"])
-        self.assertEqual(fal.call_count, 1, "matn bo'lmasa inpaint chaqirilmaydi")
-
-    def test_mock_mode_returns_sample_text_layers(self):
+    def test_mock_mode(self):
         import os
         from unittest.mock import patch
 
         from generation import layers
 
+        source = _png_data_url(108, 144)
         with patch.dict(os.environ, {"FAL_MOCK": "1"}):
-            out = layers.decompose_layers(_png_data_url(108, 144), user_id=1)
-        self.assertEqual(len(out["layers"]), 1)
-        self.assertEqual(out["layers"][0]["width"], 108)
-        self.assertGreaterEqual(len(out["textLayers"]), 1)
-        self.assertEqual(out["layersVersion"], 2)
+            out = layers.decompose_layers(source, user_id=1)
+        self.assertEqual(out["baseUrl"], source)
+        self.assertEqual(out["cleanUrl"], source)
+        self.assertEqual((out["width"], out["height"]), (108, 144))
+        self.assertEqual(len(out["textLayers"]), 2)
+        self.assertIn("source", out["textLayers"][0])
+        self.assertEqual(out["layers"], [])
+        self.assertEqual(out["layersVersion"], 3)
 
 
 class MagicLayersViewCacheTests(TestCase):
@@ -1051,33 +1341,49 @@ class MagicLayersViewCacheTests(TestCase):
         result = {"id": "r1", "url": PIXEL_PNG, "width": 1, "height": 1, **result_extra}
         return GenerationJob.objects.create(user=self.user, content_type="card", status="success", results=[result])
 
-    def _decomposed(self):
+    def _decomposed(self, **extra):
         return {
-            "layers": [{"id": "layer_1", "order": 1, "name": "Orqa fon", "url": PIXEL_PNG, "width": 1, "height": 1}],
+            "baseUrl": PIXEL_PNG,
+            "cleanUrl": "/media/generated/user_1/layers/clean_x.png",
+            "width": 1, "height": 1,
+            "layers": [],
             "textLayers": [{"id": "text_1", "text": "Yangi"}],
             "textRemoved": True,
-            "layersVersion": 2,
+            "layersVersion": 3,
+            **extra,
         }
 
-    def test_old_cache_without_version_is_recomputed(self):
+    def test_old_v2_cache_is_recomputed(self):
         from unittest.mock import patch
 
-        job = self._job({"layers": [{"id": "old", "url": PIXEL_PNG}]})
+        job = self._job({"layers": [{"id": "old", "url": PIXEL_PNG}], "textLayers": [{"id": "x"}], "layersVersion": 2})
         with patch("generation.views.decompose_layers", return_value=self._decomposed()) as decompose:
             r = self.client.post(f"/api/generations/{job.pk}/results/1/layers", {}, format="json")
 
         self.assertEqual(r.status_code, 200, r.content)
         self.assertTrue(decompose.called)
+        self.assertFalse(decompose.call_args.kwargs["separate_objects"])
         body = r.json()
         self.assertEqual(body["textLayers"][0]["text"], "Yangi")
         self.assertTrue(body["textRemoved"])
-        self.assertEqual(body["layersVersion"], 2)
+        self.assertEqual(body["layersVersion"], 3)
+        self.assertEqual(body["baseUrl"], PIXEL_PNG)
+        self.assertTrue(body["cleanUrl"].endswith("/media/generated/user_1/layers/clean_x.png"))
+        self.assertEqual(body["layers"], [])
+        self.assertEqual((body["width"], body["height"]), (1, 1))
         job.refresh_from_db()
-        self.assertEqual(job.results[0]["layersVersion"], 2)
-        self.assertEqual(job.results[0]["textLayers"][0]["id"], "text_1")
-        self.assertTrue(job.results[0]["textRemoved"])
+        stored = job.results[0]
+        self.assertEqual(stored["layersVersion"], 3)
+        self.assertEqual(stored["cleanUrl"], "/media/generated/user_1/layers/clean_x.png")
+        self.assertEqual(stored["baseUrl"], PIXEL_PNG)
+        self.assertEqual(stored["layers"], [])
+        # Serializer ham yangi maydonlarni beradi
+        result = body["job"]["results"][0]
+        self.assertEqual(result["baseUrl"], PIXEL_PNG)
+        self.assertTrue(result["cleanUrl"].endswith("clean_x.png"))
+        self.assertEqual(result["layersVersion"], 3)
 
-    def test_v2_cache_is_returned_with_text_layers(self):
+    def test_v3_cache_is_returned(self):
         from unittest.mock import patch
 
         job = self._job(self._decomposed())
@@ -1090,9 +1396,21 @@ class MagicLayersViewCacheTests(TestCase):
         self.assertTrue(body["cached"])
         self.assertEqual(body["textLayers"], [{"id": "text_1", "text": "Yangi"}])
         self.assertTrue(body["textRemoved"])
-        self.assertEqual(body["layersVersion"], 2)
+        self.assertEqual(body["layersVersion"], 3)
+        self.assertTrue(body["cleanUrl"].endswith("clean_x.png"))
 
-    def test_force_recomputes_v2_cache(self):
+    def test_cache_without_objects_recomputes_when_objects_requested(self):
+        from unittest.mock import patch
+
+        job = self._job(self._decomposed())
+        objects = [{"id": "layer_1", "order": 1, "name": "Orqa fon", "url": PIXEL_PNG, "width": 1, "height": 1}]
+        with patch("generation.views.decompose_layers", return_value=self._decomposed(layers=objects)) as decompose:
+            r = self.client.post(f"/api/generations/{job.pk}/results/1/layers", {"separateObjects": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(decompose.call_args.kwargs["separate_objects"])
+        self.assertEqual(len(r.json()["layers"]), 1)
+
+    def test_force_recomputes_v3_cache(self):
         from unittest.mock import patch
 
         job = self._job(self._decomposed())
@@ -1100,6 +1418,19 @@ class MagicLayersViewCacheTests(TestCase):
             r = self.client.post(f"/api/generations/{job.pk}/results/1/layers", {"force": True}, format="json")
         self.assertEqual(r.status_code, 200, r.content)
         self.assertTrue(decompose.called)
+
+    def test_no_text_returns_empty_lists(self):
+        from unittest.mock import patch
+
+        job = self._job({})
+        empty = self._decomposed(cleanUrl=None, textLayers=[], textRemoved=False)
+        with patch("generation.views.decompose_layers", return_value=empty):
+            r = self.client.post(f"/api/generations/{job.pk}/results/1/layers", {}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+        self.assertEqual(body["textLayers"], [])
+        self.assertIsNone(body["cleanUrl"])
+        self.assertFalse(body["textRemoved"])
 
 
 class StylePresetPromptTests(TestCase):
