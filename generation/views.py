@@ -732,3 +732,44 @@ def layer_file(request, path: str):
     response["X-Content-Type-Options"] = "nosniff"
     response["Cross-Origin-Resource-Policy"] = "cross-origin"
     return response
+
+
+# Natija fayllari (karta, foto, video prevyu): generated/user_<id>/<nom>.<kengaytma>.
+# Nega kerak: nginx /media/ ni CORS sarlavhasisiz beradi — brauzer faylni blob
+# qilib ololmaydi va "Yuklab olish" rasmni yangi oynada ochib qo'yardi.
+# /api/ esa Django orqali o'tadi (corsheaders), ?download=1 bo'lsa
+# Content-Disposition: attachment qo'yamiz — brauzer faylni darhol saqlaydi.
+GENERATED_FILE_RE = re.compile(
+    r"^generated/user_\d+/(layers/)?[A-Za-z0-9_-]{8,128}\.(png|jpg|jpeg|webp|mp4|webm)$"
+)
+GENERATED_FILE_TYPES = {**LAYER_FILE_TYPES, "mp4": "video/mp4", "webm": "video/webm"}
+
+
+def generated_file(request, path: str):
+    """``GET /api/files/<yo'l>[?download=1]`` — natija faylini CORS bilan beradi.
+
+    Autentifikatsiya yo'q (xuddi /media/ kabi): nom ichida 128-bit tasodifiy uuid.
+    """
+    if request.method not in ("GET", "HEAD"):
+        return HttpResponse(status=405)
+    path = unquote(path or "")
+    if not GENERATED_FILE_RE.match(path) or ".." in path:
+        return HttpResponse("Not found", status=404, content_type="text/plain")
+    try:
+        if not default_storage.exists(path):
+            return HttpResponse("Not found", status=404, content_type="text/plain")
+        handle = default_storage.open(path, "rb")
+    except (OSError, ValueError):
+        return HttpResponse("Not found", status=404, content_type="text/plain")
+    extension = path.rsplit(".", 1)[1].lower()
+    as_attachment = request.GET.get("download") in ("1", "true", "yes")
+    response = FileResponse(
+        handle,
+        content_type=GENERATED_FILE_TYPES[extension],
+        as_attachment=as_attachment,
+        filename=f"naslai-{path.rsplit('/', 1)[1]}" if as_attachment else None,
+    )
+    response["Cache-Control"] = "public, max-age=2592000, immutable"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Cross-Origin-Resource-Policy"] = "cross-origin"
+    return response

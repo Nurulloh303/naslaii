@@ -1906,3 +1906,39 @@ class StyleTemplateGalleryTests(TestCase):
         templates = self.client.get("/api/style-templates").json()["templates"]
         statuses = {self.client.get(item["thumb"]).status_code for item in templates}
         self.assertEqual(statuses, {200})
+
+
+class GeneratedFileEndpointTests(TestCase):
+    """«Yuklab olish»: natija fayli /api/files/ orqali CORS bilan, ?download=1 da attachment."""
+
+    def setUp(self):
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        self.path = default_storage.save("generated/user_1/abcdef0123456789.png", ContentFile(b"\x89PNG\r\n\x1a\nxx"))
+
+    def tearDown(self):
+        from django.core.files.storage import default_storage
+
+        default_storage.delete(self.path)
+
+    def test_serves_file_inline_and_as_attachment(self):
+        response = self.client.get(f"/api/files/{self.path}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+        self.assertNotIn("attachment", response.get("Content-Disposition", ""))
+
+        response = self.client.get(f"/api/files/{self.path}?download=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment", response["Content-Disposition"])
+
+    def test_cors_header_for_allowed_origin(self):
+        from django.conf import settings
+
+        origin = settings.CORS_ALLOWED_ORIGINS[0]
+        response = self.client.get(f"/api/files/{self.path}", HTTP_ORIGIN=origin)
+        self.assertEqual(response.get("Access-Control-Allow-Origin"), origin)
+
+    def test_rejects_other_paths(self):
+        for bad in ("uploads/user_1/abcdef0123456789.png", "generated/user_1/../../settings.py", "generated/user_1/x.png"):
+            self.assertEqual(self.client.get(f"/api/files/{bad}").status_code, 404, bad)

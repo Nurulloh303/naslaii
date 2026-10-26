@@ -38,6 +38,7 @@ urlpatterns = [
     path("api/generations/<int:pk>/results/<int:variant>/compose", generation_views.compose_slide, name="generation-compose-slide"),
     path("api/generations/<int:pk>/results/<int:variant>/layers", generation_views.magic_layers_view, name="generation-magic-layers"),
     path("api/layer-files/<path:path>", generation_views.layer_file, name="layer-file"),
+    path("api/files/<path:path>", generation_views.generated_file, name="generated-file"),
     path("api/projects", generation_views.projects_list, name="projects"),
     path("api/projects/<int:pk>", generation_views.project_detail, name="project-detail"),
     path("api/projects/<int:pk>/archive.zip", generation_views.project_archive, name="project-archive"),
