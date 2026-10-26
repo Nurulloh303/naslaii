@@ -187,3 +187,61 @@ def public_pricing() -> dict:
         "video": {str(k): v for k, v in VIDEO_TOKEN_MULTIPLIER.items()},
         "tokenPriceUzs": packs[0]["perToken"],
     }
+
+
+# ================================================================ Тарифы
+# Готовые наборы токенов, которые админ выдаёт по оплаченному тарифу
+# (промокодом или прямым начислением). Свободное «любое имя, любая сумма»
+# остаётся — тариф лишь второй способ.
+# Можно переопределить через NASLAI_TARIFFS_JSON:
+#   [{"id":"start","name":"Start","price_uzs":89000,"images":21}, ...]
+
+DEFAULT_TARIFFS = [
+    {"id": "start", "name": "Start", "price_uzs": 89_000, "images": 21},
+    {"id": "standart", "name": "Standart", "price_uzs": 199_000, "images": 52},
+    {"id": "profi", "name": "Profi", "price_uzs": 399_000, "images": 117},
+    {"id": "maksimum", "name": "Maksimum", "price_uzs": 599_000, "images": 195},
+]
+
+
+def _load_tariffs() -> list[dict]:
+    import json
+
+    raw = os.environ.get("NASLAI_TARIFFS_JSON", "").strip()
+    source = DEFAULT_TARIFFS
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            cleaned = []
+            for item in parsed:
+                tariff_id = str(item["id"]).strip().lower()
+                images = int(item["images"])
+                if not tariff_id or tariff_id == "custom" or images <= 0:
+                    raise ValueError(tariff_id)
+                cleaned.append({
+                    "id": tariff_id,
+                    "name": str(item.get("name") or tariff_id),
+                    "price_uzs": int(item.get("price_uzs") or 0),
+                    "images": images,
+                })
+            if cleaned:
+                source = cleaned
+        except (ValueError, TypeError, KeyError):
+            # Битый JSON в окружении не должен ронять сервер — берём встроенные.
+            source = DEFAULT_TARIFFS
+    return [{**item, "tokens": item["images"] * TOKENS_PER_IMAGE} for item in source]
+
+
+TARIFFS = _load_tariffs()
+
+
+def tariff_by_id(tariff_id) -> dict | None:
+    key = str(tariff_id or "").strip().lower()
+    return next((t for t in TARIFFS if t["id"] == key), None)
+
+
+def public_tariffs() -> list[dict]:
+    return [
+        {"id": t["id"], "name": t["name"], "priceUzs": t["price_uzs"], "images": t["images"], "tokens": t["tokens"]}
+        for t in TARIFFS
+    ]

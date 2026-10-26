@@ -1,0 +1,597 @@
+[
+ {
+  "file": "premium-01.jpg",
+  "category": "premium",
+  "cover": true
+ },
+ {
+  "file": "premium-02.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-03.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-04.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-05.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-06.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-07.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-08.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-09.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-10.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-11.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-12.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-13.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-14.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-15.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-16.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-17.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "premium-18.jpg",
+  "category": "premium"
+ },
+ {
+  "file": "lifestyle-01.jpg",
+  "category": "lifestyle",
+  "cover": true
+ },
+ {
+  "file": "lifestyle-02.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-03.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-04.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-05.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-06.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-07.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-08.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-09.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-10.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-11.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-12.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-13.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-14.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-15.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-16.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-17.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-18.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-19.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-20.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-21.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-22.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-23.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-24.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-25.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-26.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-27.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "lifestyle-28.jpg",
+  "category": "lifestyle"
+ },
+ {
+  "file": "bright-01.jpg",
+  "category": "bright",
+  "cover": true
+ },
+ {
+  "file": "bright-02.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-03.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-04.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-05.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-06.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-07.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-08.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-09.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-10.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-11.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-12.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-13.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-14.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-15.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-16.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-17.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-18.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-19.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-20.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-21.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-22.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-23.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-24.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-25.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-26.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-27.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-28.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-29.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-30.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-31.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-32.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-33.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-34.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bright-35.jpg",
+  "category": "bright"
+ },
+ {
+  "file": "bold-01.jpg",
+  "category": "bold",
+  "cover": true
+ },
+ {
+  "file": "bold-02.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-03.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-04.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-05.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-06.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-07.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-08.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-09.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-10.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-11.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-12.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-13.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-14.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-15.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-16.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-17.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-18.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-19.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-20.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-21.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-22.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-23.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-24.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-25.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-26.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "bold-27.jpg",
+  "category": "bold"
+ },
+ {
+  "file": "minimal-01.jpg",
+  "category": "minimal",
+  "cover": true
+ },
+ {
+  "file": "minimal-02.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-03.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-04.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-05.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-06.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-07.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-08.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-09.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-10.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-11.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-12.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-13.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-14.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-15.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-16.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-17.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "minimal-18.jpg",
+  "category": "minimal"
+ },
+ {
+  "file": "tech-01.jpg",
+  "category": "tech",
+  "cover": true
+ },
+ {
+  "file": "tech-02.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-03.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-04.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-05.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-06.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-07.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-08.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-09.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-10.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-11.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-12.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "tech-13.jpg",
+  "category": "tech"
+ },
+ {
+  "file": "nature-01.jpg",
+  "category": "nature",
+  "cover": true
+ },
+ {
+  "file": "nature-02.jpg",
+  "category": "nature"
+ },
+ {
+  "file": "nature-03.jpg",
+  "category": "nature"
+ },
+ {
+  "file": "nature-04.jpg",
+  "category": "nature"
+ },
+ {
+  "file": "nature-05.jpg",
+  "category": "nature"
+ },
+ {
+  "file": "nature-06.jpg",
+  "category": "nature"
+ },
+ {
+  "file": "nature-07.jpg",
+  "category": "nature"
+ },
+ {
+  "file": "nature-08.jpg",
+  "category": "nature"
+ }
+]

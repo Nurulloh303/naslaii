@@ -395,6 +395,14 @@ STATIC_ROOT = os.environ.get("DJANGO_STATIC_ROOT", str(BASE_DIR / "staticfiles")
 MEDIA_URL = "/media/"
 MEDIA_ROOT = os.environ.get("NASLAI_MEDIA_ROOT", str(BASE_DIR / "media"))
 
+# Tayyor dizayn shablonlari galereyasi (rasmlar + manifest.json). Git'da
+# saqlanadi — media/ .gitignore'da, shuning uchun u yerdan serverga yetmasdi.
+STYLE_TEMPLATES_DIR = (
+    os.environ.get("NASLAI_STYLE_TEMPLATES_DIR")
+    or os.environ.get("STYLE_TEMPLATES_DIR")
+    or str(BASE_DIR / "style_templates")
+)
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 

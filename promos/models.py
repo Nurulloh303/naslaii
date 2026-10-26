@@ -38,6 +38,9 @@ class Promo(models.Model):
     owner = models.CharField(max_length=80, blank=True, default="")
     note = models.CharField(max_length=200, blank=True, default="")
     expires_at = models.DateTimeField(null=True, blank=True)
+    # id тарифа из billing.pricing.TARIFFS, если код создан «по тарифу».
+    # Пусто — свободный код (любое имя, любая сумма).
+    tariff = models.CharField(max_length=32, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

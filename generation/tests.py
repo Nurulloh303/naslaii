@@ -1864,3 +1864,45 @@ class ShortTitleTests(TestCase):
         self.assertEqual(to_headline("maktab uchun ryukzak"), "RYUKZAK")
         self.assertEqual(to_headline("Сумка для ноутбука", language="ru"), "СУМКА")
         self.assertEqual(to_headline("Melatonin 3 mg"), "MELATONIN")
+
+
+class StyleTemplateGalleryTests(TestCase):
+    """Galereya git'dagi style_templates/ papkasidan beriladi (media/ emas)."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_default_dir_is_tracked_repo_folder(self):
+        import os
+        from django.conf import settings
+        self.assertEqual(os.path.normpath(settings.STYLE_TEMPLATES_DIR), os.path.normpath(str(settings.BASE_DIR / "style_templates")))
+        self.assertTrue(os.path.isfile(os.path.join(settings.STYLE_TEMPLATES_DIR, "manifest.json")))
+
+    def test_list_has_one_cover_per_style(self):
+        response = self.client.get("/api/style-templates")
+        self.assertEqual(response.status_code, 200)
+        templates = response.json()["templates"]
+        self.assertGreater(len(templates), 100)
+        for item in templates:
+            self.assertEqual(set(item), {"id", "category", "url", "thumb", "cover"})
+        covers = {item["category"] for item in templates if item["cover"]}
+        self.assertEqual(covers, {"premium", "lifestyle", "bright", "bold", "minimal", "tech", "nature"})
+        self.assertEqual(sum(1 for item in templates if item["cover"]), 7)
+
+    def test_file_served_and_traversal_blocked(self):
+        first = self.client.get("/api/style-templates").json()["templates"][0]
+        response = self.client.get(first["url"])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        thumb = self.client.get(first["thumb"])
+        self.assertEqual(thumb.status_code, 200)
+        self.assertLess(len(thumb.content), len(response.content))
+        self.assertEqual(self.client.get("/api/style-templates/..%2Fmanage.py").status_code, 404)
+
+    def test_gallery_thumbnails_are_not_throttled(self):
+        # Galereya ~150 prevyuni birdaniga so'raydi — anon 60/min ularni kesmasligi kerak.
+        from django.core.cache import cache
+        cache.clear()
+        templates = self.client.get("/api/style-templates").json()["templates"]
+        statuses = {self.client.get(item["thumb"]).status_code for item in templates}
+        self.assertEqual(statuses, {200})

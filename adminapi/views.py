@@ -22,7 +22,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from accounts.models import ApiKey, User
-from billing.pricing import COST_PER_IMAGE_UZS, token_packs
+from billing.pricing import COST_PER_IMAGE_UZS, public_tariffs, tariff_by_id, token_packs
 from billing.services import credit, debit
 from generation.models import GenerationJob
 from promos.models import Promo, normalize_code
@@ -73,6 +73,11 @@ def overview(request):
                 "total": Promo.objects.count(),
                 "active": Promo.objects.filter(active=True).count(),
                 "redemptions": Promo.objects.aggregate(total=Sum("used"))["total"] or 0,
+                # Сколько кодов создано по каждому тарифу (свободные — "custom").
+                "byTariff": {
+                    (row["tariff"] or "custom"): row["n"]
+                    for row in Promo.objects.values("tariff").annotate(n=Count("id"))
+                },
             },
             # Платежи не подключены, заказов нет. Ноль здесь честнее, чем
             # отсутствующее поле: без него плитка в админке пустая.
@@ -128,15 +133,24 @@ def adjust_balance(request, user_id: int):
     if not target:
         return Response({"error": "USER_NOT_FOUND", "message": "Foydalanuvchi topilmadi"}, status=status.HTTP_404_NOT_FOUND)
 
-    try:
-        amount = int(request.data.get("amount"))
-    except (TypeError, ValueError):
-        return Response({"error": "BAD_AMOUNT", "message": "Miqdor son bo‘lsin"}, status=status.HTTP_400_BAD_REQUEST)
-
-    if amount == 0 or abs(amount) > 10_000:
-        return Response({"error": "BAD_AMOUNT", "message": "Miqdor 1 dan 10000 gacha bo‘lsin"}, status=status.HTTP_400_BAD_REQUEST)
-
     reason = str(request.data.get("reason") or "").strip()[:80]
+    tariff_id = str(request.data.get("tariff") or "").strip().lower()
+    if tariff_id and tariff_id != "custom":
+        # По тарифу: сумму берём из тарифа, присланный amount игнорируем.
+        tariff = tariff_by_id(tariff_id)
+        if not tariff:
+            return Response({"error": "BAD_TARIFF", "message": "Bunday tarif yo‘q"}, status=status.HTTP_400_BAD_REQUEST)
+        amount = tariff["tokens"]
+        reason = reason or f"Tarif: {tariff['name']}"
+    else:
+        try:
+            amount = int(request.data.get("amount"))
+        except (TypeError, ValueError):
+            return Response({"error": "BAD_AMOUNT", "message": "Miqdor son bo‘lsin"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if amount == 0 or abs(amount) > 10_000:
+            return Response({"error": "BAD_AMOUNT", "message": "Miqdor 1 dan 10000 gacha bo‘lsin"}, status=status.HTTP_400_BAD_REQUEST)
+
     if amount > 0:
         credit(target, amount, reason or "Admin tomonidan qo‘shildi")
         applied = amount
@@ -149,6 +163,14 @@ def adjust_balance(request, user_id: int):
 
     target.refresh_from_db()
     return Response({"ok": True, "balance": target.balance, "applied": applied})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def tariffs(request):
+    """Тарифы, по которым админ выдаёт токены (промокодом или начислением)."""
+    require_admin(request)
+    return Response({"tariffs": public_tariffs()})
 
 
 @api_view(["GET", "POST"])

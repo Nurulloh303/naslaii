@@ -356,6 +356,8 @@ def style_templates_list(request):
             "id": entry["file"],
             "category": entry["category"],
             "url": f"/api/style-templates/{quote(entry['file'])}",
+            "thumb": f"/api/style-templates/{quote(entry['file'])}?size=thumb",
+            "cover": entry["cover"],
         }
         for entry in load_style_templates()
     ]
@@ -364,10 +366,16 @@ def style_templates_list(request):
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+@throttle_classes([])
 def style_template_file(request, file_name: str):
     """Shablon rasmining o'zi. Faqat manifestdagi fayllar beriladi — yo'l
-    hech qachon papkadan tashqariga chiqmaydi, hatto "../" qo'yilsa ham."""
-    path = resolve_style_template_path(unquote(file_name))
+    hech qachon papkadan tashqariga chiqmaydi, hatto "../" qo'yilsa ham.
+
+    Throttle o'chirilgan: galereya bir ochilishda ~150 ta prevyu so'raydi,
+    umumiy anon 60/min limiti esa ularni 429 bilan kesardi (va foydalanuvchining
+    boshqa API so'rovlari kvotasini ham yeb qo'yardi). Bu — manifestdagi
+    statik fayllar, ?size=thumb bilan ~20 KB."""
+    path = resolve_style_template_path(unquote(file_name), thumb=request.GET.get("size") == "thumb")
     if path is None:
         return Response({"error": "TEMPLATE_NOT_FOUND", "message": "Shablon topilmadi"}, status=404)
     with open(path, "rb") as handle:
