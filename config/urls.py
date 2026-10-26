@@ -5,6 +5,8 @@
 ответа — интерфейс ломается молча, без ошибки в консоли Django.
 """
 
+import os
+
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
@@ -67,3 +69,14 @@ if settings.DEBUG:
     # На боевом сервере /media/ раздаёт nginx: Django для этого медленный
     # и в один поток.
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Admin panel CSS/JS (django.contrib.admin). Agar nginx /static/ ni o'zi bermasa,
+# admin "yalang'och" (stilsiz) ochilardi. Trafik kichik — faqat adminlar uchun,
+# shuning uchun Django'ning o'zi bersa yetarli. Avval: python manage.py collectstatic
+if os.environ.get("DJANGO_SERVE_STATIC", "1") == "1":
+    from django.urls import re_path
+    from django.views.static import serve as _serve_static
+
+    urlpatterns += [
+        re_path(r"^static/(?P<path>.*)$", _serve_static, {"document_root": settings.STATIC_ROOT}),
+    ]

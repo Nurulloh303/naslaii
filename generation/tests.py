@@ -1942,3 +1942,42 @@ class GeneratedFileEndpointTests(TestCase):
     def test_rejects_other_paths(self):
         for bad in ("uploads/user_1/abcdef0123456789.png", "generated/user_1/../../settings.py", "generated/user_1/x.png"):
             self.assertEqual(self.client.get(f"/api/files/{bad}").status_code, 404, bad)
+
+
+class DjangoAdminPagesTests(TestCase):
+    """Admin sahifalari (foydalanuvchilar, promokodlar, generatsiyalar) xatosiz ochiladi."""
+
+    def setUp(self):
+        from accounts.models import User
+        from promos.models import Promo, PromoRedemption
+
+        self.admin = User.objects.create_superuser(username="boss", email="boss@example.com", password="x-strong-pass-123")
+        user = User.objects.create_user(username="u1", email="u1@example.com", password="x-strong-pass-123", name="Ali")
+        promo = Promo.objects.create(code="START21", kind="tokens", value=21, tariff="start")
+        PromoRedemption.objects.create(promo=promo, user=user)
+        self.job = GenerationJob.objects.create(
+            user=user, content_type="card", status="success", title="Yoga mat", tokens_charged=1,
+            settings={"stylePreset": "premium", "assetDataUrl": "data:image/png;base64,AAAA",
+                      "designReferenceDataUrl": "data:image/png;base64,BBBB", "designReferenceName": "Premium",
+                      "designReferenceUrl": "https://api.naslai.uz/api/style-templates/premium-01.jpg"},
+            results=[{"url": "/media/generated/user_1/abc.png", "referenceUsed": True, "promptTier": "primary"}],
+        )
+        self.client.force_login(self.admin)
+
+    def test_pages_open(self):
+        from django.conf import settings
+
+        base = f"/{settings.DJANGO_ADMIN_PATH}"
+        for url in (
+            f"{base}/", f"{base}/accounts/user/", f"{base}/promos/promo/", f"{base}/promos/promoredemption/",
+            f"{base}/generation/generationjob/", f"{base}/generation/generationjob/?style=premium&reference=yes",
+            f"{base}/generation/generationjob/?style=auto&reference=no",
+            f"{base}/generation/generationjob/{self.job.pk}/change/", f"{base}/billing/ledgerentry/",
+        ):
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200, url)
+        user_id = GenerationJob.objects.get(pk=self.job.pk).user_id
+        self.assertEqual(self.client.get(f"{base}/accounts/user/{user_id}/change/").status_code, 200)
+        page = self.client.get(f"{base}/generation/generationjob/{self.job.pk}/change/").content.decode()
+        self.assertIn("Premium", page)
+        self.assertIn("Referens ishlatilgan", page)
