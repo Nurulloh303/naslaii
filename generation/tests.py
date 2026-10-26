@@ -1845,3 +1845,22 @@ class StylePresetPromptTests(TestCase):
             "DESIGN STYLE CHOSEN",
             build_prompt(self.brief, {"contentType": "card", "stylePreset": "tech", "designReferenceDataUrl": "x"}, 1, True),
         )
+
+
+class ShortTitleTests(TestCase):
+    """Production: nom uzun gap bo'lib keldi, sarlavha esa oxirgi so'z «BILAN» bo'ldi."""
+
+    def test_short_title_cuts_description(self):
+        from .analyze import short_title
+
+        self.assertEqual(short_title("Yoga mat, qulay va ko‘pgina yutuqlar bilan"), "Yoga mat")
+        self.assertEqual(short_title("Soat"), "Soat")
+        self.assertEqual(short_title("maktab uchun ryukzak"), "maktab uchun ryukzak")
+
+    def test_headline_never_a_stopword(self):
+        from .infographic_rules import to_headline
+
+        self.assertEqual(to_headline("Yoga mat, qulay va ko‘pgina yutuqlar bilan"), "YOGA MAT")
+        self.assertEqual(to_headline("maktab uchun ryukzak"), "RYUKZAK")
+        self.assertEqual(to_headline("Сумка для ноутбука", language="ru"), "СУМКА")
+        self.assertEqual(to_headline("Melatonin 3 mg"), "MELATONIN")

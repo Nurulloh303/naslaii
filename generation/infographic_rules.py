@@ -120,6 +120,15 @@ MEASURE_TOKEN = re.compile(
 )
 
 
+# Bog'lovchi va ko'makchilar sarlavha bo'la olmaydi: «... yutuqlar bilan»
+# avval «BILAN» bo'lib chiqardi.
+HEADLINE_STOPWORDS = {
+    "bilan", "uchun", "va", "ham", "yoki", "kabi", "hamda", "bo‘yicha", "bo'yicha", "boʻyicha",
+    "для", "с", "со", "и", "в", "во", "на", "из", "по", "от", "к",
+    "with", "for", "and", "of", "the",
+}
+
+
 def to_headline(text: str, fallback: str = "", language: str = "uz") -> str:
     """Заголовок — одно слово (73% корпуса), максимум два.
 
@@ -130,14 +139,19 @@ def to_headline(text: str, fallback: str = "", language: str = "uz") -> str:
          («сумка для ноутбука» → СУМКА).
       3. Дозировка — не заголовок: «Melatonin 3 mg» давало «MG».
     """
-    cleaned = re.sub(r"[«»\".,]", " ", str(text or "")).strip()
+    # Vergulgacha bo'lgan qism — nomning o'zi; keyingisi tavsif.
+    head = re.split(r"[,;:—–|(]", str(text or ""), maxsplit=1)[0]
+    cleaned = re.sub(r"[«»\".,]", " ", head).strip()
     words = [w for w in cleaned.split() if w]
     if not words:
         return fallback
-    meaningful = [w for w in words if not MEASURE_TOKEN.match(w)]
+    base = [w for w in words if not MEASURE_TOKEN.match(w)]
+    meaningful = [w for w in base if w.lower() not in HEADLINE_STOPWORDS]
     if not meaningful:
         return fallback
     # Одно-два значимых слова — берём оба: «Vitamin C» уже заголовок.
-    if len(meaningful) <= 2:
+    # Считаем по исходной фразе: «maktab uchun ryukzak» — это три слова, и
+    # заголовком должно стать главное слово RYUKZAK, а не «MAKTAB RYUKZAK».
+    if len(base) <= 2:
         return " ".join(meaningful).upper()
     return (meaningful[-1] if language == "uz" else meaningful[0]).upper()

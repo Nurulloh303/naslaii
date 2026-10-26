@@ -62,18 +62,53 @@ FAQAT RASMDA KO‘RINADIGAN narsalarga tayaning. Ko‘rmagan xususiyatni yozmang
 suv o‘tkazmasligi, kafolat muddati, material tarkibi kabi narsalarni rasmdan
 bilib bo‘lmaydi — ularni yozmang.
 
+NOM (title) QOIDASI — eng muhim qoida:
+- Faqat mahsulot nima ekanini ayting: 1 yoki 2 so‘z. Masalan: «Yoga mat», «Soat», «Ryukzak», «Krossovka».
+- Vergul, sifatlar, afzalliklar, «bilan», «uchun», «va» kabi so‘zlar NOMDA BO‘LMASIN.
+- Noto‘g‘ri: «Yoga mat, qulay va ko‘pgina yutuqlar bilan». To‘g‘ri: «Yoga mat».
+- Sifat va afzalliklarni subtitle va benefits ga yozing.
+
 Kategoriya faqat shu ro‘yxatdan: {", ".join(CATEGORIES)}.
 
 JAVOB FORMATI — faqat JSON, boshqa matnsiz:
-{{"title": "mahsulot nomi, 40 belgidan oshmasin",
+{{"title": "mahsulotning aniq va qisqa nomi — faqat 1 yoki 2 so‘z",
   "subtitle": "qisqa aniqlovchi, 40 belgidan oshmasin yoki bo‘sh satr",
   "category": "ro‘yxatdagi kategoriya",
   "benefits": ["aniq afzallik", "aniq afzallik", "aniq afzallik"]}}"""
 
 
+# Nomni sarlavhaga aylantirishda «bilan», «uchun» kabi bog'lovchilar
+# hech qachon nom bo'lmaydi (production: «... yutuqlar bilan» → «BILAN»).
+TITLE_STOPWORDS = {
+    "bilan", "uchun", "va", "ham", "yoki", "kabi", "bo‘yicha", "bo'yicha", "boʻyicha", "hamda",
+    "для", "с", "со", "и", "в", "во", "на", "из", "по", "от", "к",
+    "with", "for", "and", "of", "the",
+}
+
+
+def short_title(raw: str) -> str:
+    """Model uzun gap qaytarsa ham, nomni qisqa qilamiz.
+
+    «Yoga mat, qulay va ko‘pgina yutuqlar bilan» → «Yoga mat»: birinchi
+    vergul / tire / nuqtali vergulgacha bo'lgan qism — odatda aynan nom.
+    Undan keyin ham 3 so'zdan uzun bo'lsa, bog'lovchidan keyingi dumni kesamiz.
+    """
+    text = re.split(r"[,;:—–|(]| - ", str(raw or ""), maxsplit=1)[0].strip()
+    words = text.split()
+    if len(words) > 3:
+        for index, word in enumerate(words[1:], start=1):
+            if word.lower().strip(".!?") in TITLE_STOPWORDS and index >= 1:
+                # «Sumka bilan ...» → «Sumka»; lekin «maktab uchun ryukzak» kabi
+                # bog'lovchi o'rtada bo'lsa va keyin faqat 1 so'z qolsa — tegmaymiz.
+                if len(words) - index - 1 > 1:
+                    words = words[:index]
+                break
+    return " ".join(words)[:40].strip()
+
+
 def _clean(payload: dict, language: str) -> dict:
     """Приводим ответ модели к тому, что ждёт форма брифа."""
-    title = str(payload.get("title") or "").strip()[:60]
+    title = short_title(str(payload.get("title") or ""))
     subtitle = str(payload.get("subtitle") or "").strip()[:40]
     category = payload.get("category")
     benefits = [str(item).strip()[:80] for item in (payload.get("benefits") or []) if str(item).strip()]
