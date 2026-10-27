@@ -1981,3 +1981,36 @@ class DjangoAdminPagesTests(TestCase):
         page = self.client.get(f"{base}/generation/generationjob/{self.job.pk}/change/").content.decode()
         self.assertIn("Premium", page)
         self.assertIn("Referens ishlatilgan", page)
+
+
+class ApiKeyDjangoAdminTests(TestCase):
+    def test_add_key_from_django_admin_shows_secret_and_credits_tariff(self):
+        from django.conf import settings
+
+        from accounts.models import ApiKey
+
+        boss = User.objects.create_superuser(username="boss2", email="boss2@example.com", password="x-strong-pass-123")
+        owner = User.objects.create_user(username="o1", email="o1@example.com", password="x-strong-pass-123")
+        self.client.force_login(boss)
+        base = f"/{settings.DJANGO_ADMIN_PATH}/accounts/apikey"
+        self.assertEqual(self.client.get(f"{base}/add/").status_code, 200)
+        response = self.client.post(
+            f"{base}/add/",
+            {"user": owner.pk, "name": "Sarvar", "note": "", "tariff": "profi", "amount": "",
+             "ledger-TOTAL_FORMS": "0", "ledger-INITIAL_FORMS": "0", "ledger-MIN_NUM_FORMS": "0", "ledger-MAX_NUM_FORMS": "1000"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        key = ApiKey.objects.get(name="Sarvar")
+        self.assertEqual(key.balance, 117)
+        self.assertIn("nsk_live_", response.content.decode())
+        self.assertEqual(self.client.get(f"{base}/{key.pk}/change/").status_code, 200)
+        response = self.client.post(
+            f"{base}/{key.pk}/change/",
+            {"name": "Sarvar", "note": "", "top_up_tariff": "", "top_up_amount": "10", "top_up_note": "chek 12",
+             "ledger-TOTAL_FORMS": "1", "ledger-INITIAL_FORMS": "1", "ledger-MIN_NUM_FORMS": "0", "ledger-MAX_NUM_FORMS": "1000",
+             "ledger-0-id": str(key.ledger.first().pk), "ledger-0-key": str(key.pk)},
+            follow=True,
+        )
+        key.refresh_from_db()
+        self.assertEqual(key.balance, 127)

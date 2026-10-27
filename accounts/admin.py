@@ -1,4 +1,8 @@
-from django.contrib import admin
+import hashlib
+import secrets
+
+from django import forms
+from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.db.models import Count, IntegerField, OuterRef, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
@@ -8,7 +12,7 @@ from billing.models import LedgerEntry
 from generation.models import GenerationJob
 from promos.models import PromoRedemption
 
-from .models import ApiKey, User
+from .models import ApiKey, ApiKeyLedger, User
 
 admin.site.site_header = "Naslai admin"
 admin.site.site_title = "Naslai admin"
@@ -117,8 +121,121 @@ class UserAdmin(DjangoUserAdmin):
         return ", ".join(obj.providers) or "email"
 
 
+def _tariff_choices():
+    from billing.pricing import TARIFFS
+
+    return [("", "— tarifsiz —")] + [
+        (t["id"], f"{t['name']} · {t['price_uzs']:,} so'm · {t['tokens']} token".replace(",", " ")) for t in TARIFFS
+    ]
+
+
+class ApiKeyAddForm(forms.ModelForm):
+    """Yangi kalit: egasi, nomi, izoh va boshlang'ich balans (tarif yoki erkin son)."""
+
+    tariff = forms.ChoiceField(label="Tarif", required=False)
+    amount = forms.IntegerField(label="Yoki erkin token soni", required=False, min_value=0, max_value=100_000)
+
+    class Meta:
+        model = ApiKey
+        fields = ("user", "name", "note")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["tariff"].choices = _tariff_choices()
+
+
+class ApiKeyChangeForm(forms.ModelForm):
+    """Mavjud kalit: balansni to'ldirish (tarif yoki erkin son). Balansning o'zi faqat o'qiladi."""
+
+    top_up_tariff = forms.ChoiceField(label="Tarif bo'yicha to'ldirish", required=False)
+    top_up_amount = forms.IntegerField(label="Yoki erkin token qo'shish", required=False, min_value=1, max_value=100_000)
+    top_up_note = forms.CharField(label="Izoh (masalan: to'lov raqami)", required=False, max_length=200)
+
+    class Meta:
+        model = ApiKey
+        fields = ("name", "note")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["top_up_tariff"].choices = _tariff_choices()
+
+
+class ApiKeyLedgerInline(admin.TabularInline):
+    model = ApiKeyLedger
+    extra = 0
+    can_delete = False
+    fields = ("created_at", "type", "amount", "label", "balance_after")
+    readonly_fields = fields
+    ordering = ("-created_at",)
+    verbose_name_plural = "Balans tarixi"
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(ApiKey)
 class ApiKeyAdmin(admin.ModelAdmin):
-    list_display = ("name", "prefix", "user", "balance", "created_at", "last_used_at")
-    readonly_fields = ("prefix", "digest", "created_at", "last_used_at")
-    search_fields = ("user__email",)
+    list_display = ("name", "prefix", "user", "balance", "spent", "created_at", "last_used_at")
+    search_fields = ("user__email", "name", "prefix", "note")
+    list_select_related = ("user",)
+    autocomplete_fields = ("user",)
+    inlines = (ApiKeyLedgerInline,)
+
+    def get_form(self, request, obj=None, **kwargs):
+        kwargs["form"] = ApiKeyChangeForm if obj else ApiKeyAddForm
+        return super().get_form(request, obj, **kwargs)
+
+    def get_fieldsets(self, request, obj=None):
+        if obj is None:
+            return (
+                ("Kalit", {"fields": ("user", "name", "note")}),
+                ("Boshlang'ich balans", {"fields": ("tariff", "amount")}),
+            )
+        return (
+            ("Kalit", {"fields": ("user", "name", "prefix", "note", "balance", "created_at", "last_used_at")}),
+            ("Balansni to'ldirish", {"fields": ("top_up_tariff", "top_up_amount", "top_up_note")}),
+        )
+
+    def get_readonly_fields(self, request, obj=None):
+        return ("user", "prefix", "balance", "created_at", "last_used_at") if obj else ()
+
+    @admin.display(description="Sarflangan")
+    def spent(self, obj):
+        return sum(item.amount for item in obj.ledger.filter(type=ApiKeyLedger.DEBIT))
+
+    def save_model(self, request, obj, form, change):
+        from billing.pricing import tariff_by_id
+        from billing.services import key_credit
+
+        if not change:
+            # Maxfiy kalit faqat bir marta, yaratilgan zahoti ko'rsatiladi —
+            # bazada faqat uning hash'i saqlanadi.
+            secret = f"nsk_live_{secrets.token_urlsafe(24)}"
+            obj.prefix = secret[:18]
+            obj.digest = hashlib.sha256(secret.encode()).hexdigest()
+            obj.balance = 0
+            if not obj.name:
+                obj.name = f"API kalit {ApiKey.objects.filter(user=obj.user).count() + 1}"
+            super().save_model(request, obj, form, change)
+            tariff = tariff_by_id(form.cleaned_data.get("tariff"))
+            amount = tariff["tokens"] if tariff else (form.cleaned_data.get("amount") or 0)
+            if amount:
+                key_credit(obj, amount, f"Tarif: {tariff['name']}" if tariff else "Boshlang'ich balans")
+            messages.warning(
+                request,
+                format_html(
+                    "API kalit yaratildi. <b>Uni hozir nusxalab oling — boshqa ko'rsatilmaydi:</b> "
+                    "<code style='font-size:14px;user-select:all'>{}</code>",
+                    secret,
+                ),
+            )
+            return
+
+        super().save_model(request, obj, form, change)
+        tariff = tariff_by_id(form.cleaned_data.get("top_up_tariff"))
+        amount = tariff["tokens"] if tariff else form.cleaned_data.get("top_up_amount")
+        if amount:
+            note = (form.cleaned_data.get("top_up_note") or "").strip()
+            label = f"Tarif: {tariff['name']}" if tariff else "Admin tomonidan qo'shildi"
+            key_credit(obj, amount, f"{label} · {note}" if note else label)
+            messages.success(request, f"Kalit balansiga {amount} token qo'shildi.")

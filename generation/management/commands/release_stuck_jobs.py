@@ -28,7 +28,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from billing.services import refund
+from billing.services import refund_job
 from generation.models import GenerationJob
 
 RUNNING_STATUSES = ["queued", "processing"]
@@ -72,7 +72,7 @@ class Command(BaseCommand):
                 continue
 
             if job.tokens_charged and not job.refunded:
-                refund(job.user, job.tokens_charged, f"Bajarilmagan generatsiya uchun qaytarish · {job.content_type}")
+                refund_job(job, job.tokens_charged, f"Bajarilmagan generatsiya uchun qaytarish · {job.content_type}")
                 job.refunded = True
                 refunded_tokens += job.tokens_charged
 

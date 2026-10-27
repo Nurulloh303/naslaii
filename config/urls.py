@@ -63,6 +63,7 @@ urlpatterns = [
 
     path("api/api-keys", account_views.api_keys, name="api-keys"),
     path("api/api-keys/<int:key_id>", account_views.revoke_api_key, name="api-key-revoke"),
+    path("api/key/balance", account_views.api_key_balance, name="api-key-balance"),
 ]
 
 if settings.DEBUG:

@@ -23,7 +23,7 @@ from rest_framework.response import Response
 
 from accounts.models import ApiKey, User
 from billing.pricing import COST_PER_IMAGE_UZS, public_tariffs, tariff_by_id, token_packs
-from billing.services import credit, debit
+from billing.services import credit, debit, key_credit
 from generation.models import GenerationJob
 from promos.models import Promo, normalize_code
 from promos.serializers import PromoSerializer, PromoWriteSerializer
@@ -300,8 +300,9 @@ def api_keys_collection(request):
     if not name:
         name = f"API kalit {target.api_keys.count() + 1}"
 
+    initial_tariff = tariff_by_id(request.data.get("initialTariff")) if request.data.get("initialTariff") else None
     try:
-        initial_balance = max(0, int(request.data.get("initialBalance") or 0))
+        initial_balance = initial_tariff["tokens"] if initial_tariff else max(0, int(request.data.get("initialBalance") or 0))
     except (TypeError, ValueError):
         initial_balance = 0
 
@@ -313,9 +314,14 @@ def api_keys_collection(request):
         name=name,
         prefix=secret[:18],
         digest=hashlib.sha256(secret.encode()).hexdigest(),
-        balance=initial_balance,
+        balance=0,
         note=note,
     )
+    if initial_balance:
+        key = key_credit(
+            key, initial_balance,
+            f"Tarif: {initial_tariff['name']}" if initial_tariff else "Boshlang'ich balans",
+        )
     return Response(
         {"key": _api_key_payload(key), "secret": secret},
         status=status.HTTP_201_CREATED,
@@ -341,20 +347,24 @@ def api_key_detail(request, key_id: int):
         key.delete()
         return Response({"ok": True})
 
-    # POST — credit qo'shish
-    try:
-        amount = int(request.data.get("amount"))
-    except (TypeError, ValueError):
-        return Response({"error": "BAD_AMOUNT", "message": "Miqdor son bo'lsin"}, status=400)
+    # POST — credit qo'shish: tarif bo'yicha ({"tariff": "start"}) yoki erkin miqdor.
+    tariff_id = str(request.data.get("tariff") or "").strip().lower()
+    if tariff_id and tariff_id != "custom":
+        tariff = tariff_by_id(tariff_id)
+        if not tariff:
+            return Response({"error": "BAD_TARIFF", "message": "Bunday tarif yo'q"}, status=400)
+        amount = tariff["tokens"]
+        default_label = f"Tarif: {tariff['name']}"
+    else:
+        try:
+            amount = int(request.data.get("amount"))
+        except (TypeError, ValueError):
+            return Response({"error": "BAD_AMOUNT", "message": "Miqdor son bo'lsin"}, status=400)
+        default_label = "Admin tomonidan qo'shildi"
 
     if amount <= 0 or amount > 100_000:
         return Response({"error": "BAD_AMOUNT", "message": "Miqdor 1 dan 100000 gacha bo'lsin"}, status=400)
 
-    from django.db import transaction
-    with transaction.atomic():
-        locked = ApiKey.objects.select_for_update().get(pk=key.pk)
-        locked.balance += amount
-        locked.save(update_fields=["balance"])
-
-    locked.refresh_from_db()
+    label = str(request.data.get("note") or "").strip()[:200] or default_label
+    locked = key_credit(key, amount, label)
     return Response({"ok": True, "balance": locked.balance, "added": amount})

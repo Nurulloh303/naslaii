@@ -97,3 +97,76 @@ class TariffAdminTests(TestCase):
         Promo.objects.create(code="FREE1", kind="tokens", value=5)
         response = self.client.get("/api/admin/overview")
         self.assertEqual(response.data["promos"]["byTariff"], {"start": 1, "custom": 1})
+
+
+class ApiKeyAdminOnlyTests(TestCase):
+    """API kalitlar: faqat admin beradi, balans kalitda yuradi, qaytarish ham kalitga."""
+
+    def setUp(self):
+        from django.test import override_settings  # noqa: F401
+        import os
+
+        from accounts.models import User
+
+        self._env = os.environ.get("ADMIN_EMAILS")
+        os.environ["ADMIN_EMAILS"] = "boss@example.com"
+        self.admin = User.objects.create_user(username="boss", email="boss@example.com", password="x-strong-pass-123")
+        self.user = User.objects.create_user(username="u1", email="u1@example.com", password="x-strong-pass-123")
+
+    def tearDown(self):
+        import os
+
+        if self._env is None:
+            os.environ.pop("ADMIN_EMAILS", None)
+        else:
+            os.environ["ADMIN_EMAILS"] = self._env
+
+    def _client(self, user):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def test_regular_user_cannot_create_keys(self):
+        response = self._client(self.user).post("/api/api-keys", {}, format="json")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self._client(self.user).get("/api/api-keys").status_code, 404)
+
+    def test_admin_creates_key_with_tariff_and_tops_up(self):
+        from accounts.models import ApiKey, ApiKeyLedger
+
+        client = self._client(self.admin)
+        response = client.post("/api/admin/api-keys", {"userId": self.user.pk, "initialTariff": "start"}, format="json")
+        self.assertEqual(response.status_code, 201)
+        key = ApiKey.objects.get(pk=response.data["key"]["id"])
+        self.assertEqual(key.balance, 21)
+        secret = response.data["secret"]
+
+        response = client.post(f"/api/admin/api-keys/{key.pk}", {"tariff": "standart"}, format="json")
+        self.assertEqual(response.data["balance"], 73)
+        self.assertEqual(ApiKeyLedger.objects.filter(key=key).count(), 2)
+
+        from rest_framework.test import APIClient
+
+        holder = APIClient()
+        holder.credentials(HTTP_AUTHORIZATION=f"Bearer {secret}")
+        response = holder.get("/api/key/balance")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["balance"], 73)
+        self.assertEqual(len(response.data["history"]), 2)
+
+    def test_refund_goes_back_to_key(self):
+        from accounts.models import ApiKey
+        from billing.services import key_credit, key_debit, refund_job
+        from generation.models import GenerationJob
+
+        key = ApiKey.objects.create(user=self.user, name="k", prefix="nsk_live_x", digest="d" * 64)
+        key_credit(key, 5, "start")
+        key_debit(key, 2, "gen")
+        job = GenerationJob.objects.create(user=self.user, content_type="card", tokens_charged=2, api_key=key)
+        refund_job(job, 2, "qaytarish")
+        key.refresh_from_db()
+        self.user.refresh_from_db()
+        self.assertEqual(key.balance, 5)
+        self.assertEqual(self.user.balance, 0)

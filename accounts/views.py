@@ -206,6 +206,11 @@ def telegram_login(request):
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def api_keys(request):
+    # API kalitlarni endi faqat adminlar beradi (Django admin yoki /api/admin/api-keys).
+    # Oddiy foydalanuvchi profilidan kalit yaratish olib tashlandi.
+    from adminapi.views import require_admin
+
+    require_admin(request)
     limit = max(1, int(os.environ.get("MAX_API_KEYS_PER_USER", 3)))
 
     if request.method == "GET":
@@ -239,7 +244,39 @@ def api_keys(request):
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def revoke_api_key(request, key_id: int):
+    from adminapi.views import require_admin
+
+    require_admin(request)
     deleted, _ = ApiKey.objects.filter(pk=key_id, user=request.user).delete()
     if not deleted:
         return Response({"error": "KEY_NOT_FOUND", "message": "Kalit topilmadi"}, status=status.HTTP_404_NOT_FOUND)
     return Response({"ok": True})
+
+
+@api_view(["GET"])
+def api_key_balance(request):
+    """``GET /api/key/balance`` — kalit egasi o'z balansini va oxirgi harakatlarini ko'radi.
+
+    Faqat ``Authorization: Bearer nsk_live_...`` bilan ishlaydi (sayt sessiyasi emas).
+    """
+    from .models import ApiKey
+
+    key = getattr(request, "api_key", None)
+    if not isinstance(key, ApiKey):
+        return Response(
+            {"error": "API_KEY_REQUIRED", "message": "Authorization: Bearer <API kalit> sarlavhasi kerak"},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+    key.refresh_from_db()
+    return Response({
+        "name": key.name,
+        "prefix": key.prefix,
+        "balance": key.balance,
+        "lastUsedAt": key.last_used_at,
+        "history": [
+            {"type": item.type, "amount": item.amount, "label": item.label,
+             "balanceAfter": item.balance_after, "at": item.created_at}
+            for item in key.ledger.all()[:50]
+        ],
+    })
+

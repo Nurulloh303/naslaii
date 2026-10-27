@@ -16,7 +16,7 @@ from rest_framework.response import Response
 import logging
 
 from billing.pricing import TOKENS_PER_IMAGE, quote_for
-from billing.services import InsufficientBalance, debit, refund
+from billing.services import InsufficientBalance, debit, key_debit, refund, refund_job
 from config.throttling import AnalyzeThrottle, GenerationThrottle
 from accounts.models import ApiKey
 
@@ -135,17 +135,10 @@ def create_generation(request):
     # Oddiy foydalanuvchi so'rovi bo'lsa — user.balance dan.
     api_key = getattr(request, "api_key", None)
     if isinstance(api_key, ApiKey):
-        from django.db import transaction as _tx
-        with _tx.atomic():
-            locked_key = ApiKey.objects.select_for_update().get(pk=api_key.pk)
-            if locked_key.balance < tokens_needed:
-                return Response(
-                    {"error": "INSUFFICIENT_TOKENS",
-                     "message": f"API kalit tokenlar yetarli emas: kerak {tokens_needed}, mavjud {locked_key.balance}"},
-                    status=402,
-                )
-            locked_key.balance -= tokens_needed
-            locked_key.save(update_fields=["balance"])
+        try:
+            key_debit(api_key, tokens_needed, f"Generatsiya · {content_type}")
+        except InsufficientBalance as exc:
+            return Response({"error": "INSUFFICIENT_TOKENS", "message": str(exc)}, status=402)
         user = request.user
         user.refresh_from_db()
     else:
@@ -167,6 +160,7 @@ def create_generation(request):
         benefits=benefits,
         settings=settings_payload,
         tokens_charged=quote["tokens"],
+        api_key=api_key if isinstance(api_key, ApiKey) else None,
         idempotency_key=idempotency_key,
         status="queued",
         message="Vazifa navbatda",
@@ -184,7 +178,7 @@ def create_generation(request):
         # выдал бы их бесплатно.
         job.refresh_from_db()
         if job.tokens_charged and not job.refunded:
-            refund(user, job.tokens_charged, f"Navbatga qo‘shilmadi · {content_type}")
+            refund_job(job, job.tokens_charged, f"Navbatga qo‘shilmadi · {content_type}")
             job.refunded = True
         if job.status not in {"success", "failed"}:
             job.status = "failed"
@@ -433,7 +427,7 @@ def cancel_generation(request, pk: int):
     unused = max(0, job.tokens_charged - delivered)
 
     if unused and not job.refunded:
-        refund(request.user, unused, f"Bekor qilingan generatsiya uchun qaytarish · {job.content_type}")
+        refund_job(job, unused, f"Bekor qilingan generatsiya uchun qaytarish · {job.content_type}")
     job.refunded = True
 
     if delivered:

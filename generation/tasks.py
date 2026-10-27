@@ -16,7 +16,7 @@ from celery import shared_task
 from django.conf import settings
 
 from billing.pricing import total_renders
-from billing.services import refund
+from billing.services import refund_job
 
 from .models import GenerationJob
 from .providers import get_provider
@@ -73,7 +73,7 @@ def run_job(job: GenerationJob) -> None:
 
     # Возврат вне try: если упадёт сам возврат, статус задачи уже сохранён.
     if job.tokens_charged and not job.refunded:
-        refund(job.user, job.tokens_charged, f"Generatsiya uchun qaytarish · {job.content_type}")
+        refund_job(job, job.tokens_charged, f"Generatsiya uchun qaytarish · {job.content_type}")
         job.refunded = True
         job.save(update_fields=["refunded", "updated_at"])
 

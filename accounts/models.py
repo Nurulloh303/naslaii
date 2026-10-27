@@ -71,3 +71,30 @@ class ApiKey(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user_id}: {self.name} (balance={self.balance})"
+
+
+class ApiKeyLedger(models.Model):
+    """API kalit balansidagi har bir harakat: admin qo'shgani, generatsiya yechgani, qaytarilgani.
+
+    Kalit egasi va admin "token qayerga ketdi" degan savolga shu ro'yxatdan javob oladi.
+    """
+
+    CREDIT = "credit"
+    DEBIT = "debit"
+    TYPE_CHOICES = [(CREDIT, "Qo'shildi"), (DEBIT, "Yechildi")]
+
+    key = models.ForeignKey(ApiKey, on_delete=models.CASCADE, related_name="ledger")
+    type = models.CharField(max_length=8, choices=TYPE_CHOICES)
+    amount = models.PositiveIntegerField()
+    label = models.CharField(max_length=200)
+    balance_after = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "API kalit harakati"
+        verbose_name_plural = "API kalit harakatlari"
+
+    def __str__(self) -> str:
+        return f"key#{self.key_id} {self.type} {self.amount} -> {self.balance_after}"
+

@@ -35,6 +35,12 @@ class GenerationJob(models.Model):
     results = models.JSONField(default=list, blank=True)
 
     tokens_charged = models.PositiveIntegerField(default=0)
+    # Token qaysi balansdan yechilgan: API kalit orqali kelgan so'rovda —
+    # kalitdan. Qaytarish ham o'sha joyga bo'lishi shart, aks holda kalit
+    # egasining shaxsiy balansiga "bepul" token tushib qolardi.
+    api_key = models.ForeignKey(
+        "accounts.ApiKey", on_delete=models.SET_NULL, null=True, blank=True, related_name="jobs",
+    )
     # Отмена. Флаг читает цикл генерации между картинками: запрос, уже
     # ушедший в OpenAI, прервать нельзя — за него мы всё равно платим.
     cancelled = models.BooleanField(default=False)
