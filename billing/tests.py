@@ -10,18 +10,22 @@ from .pricing import COST_PER_IMAGE_UZS, quote_for, token_packs
 
 
 class PricingTests(TestCase):
-    def test_packs_match_node_version(self):
+    def test_packs_are_tariffs(self):
         expected = {
-            "start": (10, 39_000, 3_900),
-            "plus": (40, 139_500, 3_488),
-            "pro": (120, 381_000, 3_175),
-            "studio": (500, 1_451_000, 2_902),
+            "start": (21, 89_000, 4_238, 0),
+            "standart": (52, 199_000, 3_827, 10),
+            "profi": (117, 399_000, 3_410, 20),
+            "maksimum": (195, 599_000, 3_072, 28),
         }
-        for pack in token_packs():
-            tokens, price, per_token = expected[pack["id"]]
+        packs = token_packs()
+        self.assertEqual([pack["id"] for pack in packs], list(expected))
+        for pack in packs:
+            tokens, price, per_token, discount = expected[pack["id"]]
             self.assertEqual(pack["tokens"], tokens, pack["id"])
             self.assertEqual(pack["priceUzs"], price, pack["id"])
             self.assertEqual(pack["perToken"], per_token, pack["id"])
+            self.assertEqual(pack["discount"], discount, pack["id"])
+        self.assertEqual([pack["id"] for pack in packs if pack["popular"]], ["standart"])
 
     def test_price_per_token_strictly_decreases(self):
         """Большой пакет обязан быть выгоднее маленького.

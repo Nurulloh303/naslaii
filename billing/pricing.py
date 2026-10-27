@@ -67,38 +67,35 @@ def round_up_to(value: float, step: int = 500) -> int:
     return int(math.ceil(value / step) * step)
 
 
-PACK_LADDER = [
-    {"id": "start", "tokens": 10, "discount": 0.0, "popular": False},
-    {"id": "plus", "tokens": 40, "discount": 0.10, "popular": True},
-    {"id": "pro", "tokens": 120, "discount": 0.18, "popular": False},
-    {"id": "studio", "tokens": 500, "discount": DEEPEST_DISCOUNT, "popular": False},
-]
 
 
 def token_packs() -> list[dict]:
-    """Пакеты токенов. Цена за токен строго убывает с размером пакета.
+    """Sotuvdagi paketlar = tariflar (Start, Standart, Profi, Maksimum).
 
-    Скидку считаем от цены САМОГО МАЛЕНЬКОГО пакета, а не от расчётной
-    базы. Иначе у стартового пакета выходит «−1%»: цена округляется вверх
-    до 500 сум и оказывается чуть выше базы. Так же считает Node-версия.
+    Ilgari bu yerda formuladan hisoblangan 10/40/120/500 token paketlari
+    turardi — sotuvda esa boshqa tariflar edi, profil sahifasida eski narxlar
+    ko'rinib qolgandi. Endi narx va token soni bitta joydan — TARIFFS dan.
+
+    Chegirma eng kichik tarifning bir token narxiga nisbatan hisoblanadi.
+    Eng ommabopi — ikkinchi tarif (Standart).
     """
-    priced = []
-    for pack in PACK_LADDER:
-        price = round_up_to(pack["tokens"] * BASE_TOKEN_PRICE_UZS * (1 - pack["discount"]))
-        priced.append((pack, price, price / pack["tokens"]))
-
-    base_per_token = priced[0][2]
-
+    tariffs = [t for t in TARIFFS if t["price_uzs"] > 0 and t["tokens"] > 0]
+    if not tariffs:
+        return []
+    base_per_token = tariffs[0]["price_uzs"] / tariffs[0]["tokens"]
+    popular_id = tariffs[1]["id"] if len(tariffs) > 1 else tariffs[0]["id"]
     return [
         {
-            "id": pack["id"],
-            "tokens": pack["tokens"],
-            "priceUzs": price,
-            "perToken": round(per_token),
-            "discount": max(0, round(100 * (1 - per_token / base_per_token))),
-            "popular": pack["popular"],
+            "id": t["id"],
+            "name": t["name"],
+            "tokens": t["tokens"],
+            "images": t["images"],
+            "priceUzs": t["price_uzs"],
+            "perToken": round(t["price_uzs"] / t["tokens"]),
+            "discount": max(0, round(100 * (1 - (t["price_uzs"] / t["tokens"]) / base_per_token))),
+            "popular": t["id"] == popular_id,
         }
-        for pack, price, per_token in priced
+        for t in tariffs
     ]
 
 
