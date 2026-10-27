@@ -207,9 +207,9 @@ class AccountSerializer(serializers.ModelSerializer):
     def get_isAdmin(self, obj: User) -> bool:
         # Флаг только для отрисовки меню. Настоящая проверка — на каждом
         # запросе к /api/admin/*, фронтенду доверять нельзя.
-        raw = os.environ.get("ADMIN_EMAILS", "")
-        allowed = {item.strip().lower() for item in raw.split(",") if item.strip()}
-        return str(obj.email or "").lower() in allowed
+        from adminapi.views import is_admin_user
+
+        return is_admin_user(obj)
 
     def get_ledger(self, obj: User):
         from billing.serializers import ledger_entry_payload

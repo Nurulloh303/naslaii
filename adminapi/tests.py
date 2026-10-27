@@ -170,3 +170,19 @@ class ApiKeyAdminOnlyTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(key.balance, 5)
         self.assertEqual(self.user.balance, 0)
+
+
+class SuperuserIsAdminTests(TestCase):
+    def test_superuser_gets_admin_api_and_flag(self):
+        import os
+
+        os.environ.pop("ADMIN_EMAILS", None)
+        boss = User.objects.create_superuser(username="su", email="su@example.com", password="x-strong-pass-123")
+        plain = User.objects.create_user(username="pl", email="pl@example.com", password="x-strong-pass-123")
+        client = APIClient()
+        client.force_authenticate(boss)
+        self.assertEqual(client.get("/api/admin/overview").status_code, 200)
+        client.force_authenticate(plain)
+        self.assertEqual(client.get("/api/admin/overview").status_code, 404)
+
+        from accounts.serializers import AccountSerializer  # noqa: F401

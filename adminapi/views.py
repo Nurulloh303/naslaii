@@ -34,9 +34,23 @@ def admin_emails() -> set[str]:
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
+def is_admin_user(user) -> bool:
+    """Admin = ADMIN_EMAILS ro'yxatidagi email YOKI Django superuser.
+
+    Ikkala yo'l bir xil huquq beradi: Django admin'ga kira olgan odam
+    saytdagi admin sahifasiga ham kira olishi kerak (va aksincha ro'yxat
+    orqali). Bo'sh ro'yxat va superuser yo'q = admin yo'q — xavfsiz holat.
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "is_superuser", False) and getattr(user, "is_active", False):
+        return True
+    return str(user.email or "").lower() in admin_emails()
+
+
 def require_admin(request):
     """Пустой список = админка закрыта для всех. Это безопасное значение."""
-    if str(request.user.email or "").lower() not in admin_emails():
+    if not is_admin_user(request.user):
         raise Http404
 
 
