@@ -2014,3 +2014,24 @@ class ApiKeyDjangoAdminTests(TestCase):
         )
         key.refresh_from_db()
         self.assertEqual(key.balance, 127)
+
+
+class AdminLoginGuardTests(TestCase):
+    def test_locks_after_failures_and_unlocks_on_success_path(self):
+        from django.conf import settings
+        from django.core.cache import cache
+
+        from config import admin_guard
+
+        cache.clear()
+        User.objects.create_superuser(username="g1", email="g1@example.com", password="x-strong-pass-123")
+        url = f"/{settings.DJANGO_ADMIN_PATH}/login/"
+        for _ in range(admin_guard.MAX_FAILURES):
+            response = self.client.post(url, {"username": "g1@example.com", "password": "wrong"}, REMOTE_ADDR="9.9.9.9")
+            self.assertEqual(response.status_code, 200)
+        blocked = self.client.post(url, {"username": "g1@example.com", "password": "x-strong-pass-123"}, REMOTE_ADDR="9.9.9.9")
+        self.assertEqual(blocked.status_code, 429)
+        # Boshqa IP bloklanmagan.
+        ok = self.client.post(url, {"username": "g1@example.com", "password": "x-strong-pass-123"}, REMOTE_ADDR="8.8.8.8")
+        self.assertEqual(ok.status_code, 302)
+        cache.clear()

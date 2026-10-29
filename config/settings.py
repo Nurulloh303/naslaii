@@ -420,3 +420,10 @@ LOGGING = {
         "django.security": {"handlers": ["console"], "level": "WARNING", "propagate": False},
     },
 }
+
+
+# ------------------------------------------------------ Admin login himoyasi
+# Django admin login formasiga parol tanlash (brute-force) cheklovi.
+# Ro'yxat oxiriga qo'shiladi — MIDDLEWARE ro'yxatining o'zi o'zgarmaydi.
+MIDDLEWARE = [*MIDDLEWARE, "config.admin_guard.AdminLoginGuardMiddleware"]
+LOGGING["loggers"]["security"] = {"handlers": ["console"], "level": "INFO", "propagate": False}
