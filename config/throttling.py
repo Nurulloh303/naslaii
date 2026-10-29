@@ -45,3 +45,9 @@ class AnalyzeThrottle(UserRateThrottle):
     """Разбор фотографии моделью — тоже платный вызов."""
 
     scope = "analyze"
+
+
+class LayerExtractThrottle(UserRateThrottle):
+    """Magic Layers: bosilgan nuqtadan element ajratish (SAM2 + eraser — pullik)."""
+
+    scope = "layer_extract"

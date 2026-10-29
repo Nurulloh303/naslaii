@@ -39,6 +39,7 @@ urlpatterns = [
     path("api/generations/<int:pk>/results/<int:variant>/regenerate", generation_views.regenerate_slide, name="generation-regenerate-slide"),
     path("api/generations/<int:pk>/results/<int:variant>/compose", generation_views.compose_slide, name="generation-compose-slide"),
     path("api/generations/<int:pk>/results/<int:variant>/layers", generation_views.magic_layers_view, name="generation-magic-layers"),
+    path("api/generations/<int:pk>/results/<int:variant>/layers/extract", generation_views.magic_layers_extract_view, name="generation-magic-layers-extract"),
     path("api/layer-files/<path:path>", generation_views.layer_file, name="layer-file"),
     path("api/files/<path:path>", generation_views.generated_file, name="generated-file"),
     path("api/projects", generation_views.projects_list, name="projects"),

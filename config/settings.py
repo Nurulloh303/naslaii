@@ -181,6 +181,7 @@ REST_FRAMEWORK = {
         "generation": os.environ.get("THROTTLE_GENERATION", "30/hour"),
         "audit": os.environ.get("THROTTLE_AUDIT", "20/hour"),
         "analyze": os.environ.get("THROTTLE_ANALYZE", "60/hour"),
+        "layer_extract": os.environ.get("THROTTLE_LAYER_EXTRACT", "30/min"),
     },
 }
 

@@ -1447,8 +1447,192 @@ class ObjectLayersTests(TestCase):
         self.assertTrue((out[~mask] == rgb[~mask]).all())
 
 
+def _mask_png(shape, *rects, circles=()):
+    """(H, W) qora maska, oq to'rtburchaklar [x0, y0, x1, y1) va doiralar (cx, cy, r) — data URL."""
+    from PIL import Image, ImageDraw
+
+    height, width = shape
+    img = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(img)
+    for x0, y0, x1, y1 in rects:
+        draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
+    for cx, cy, r in circles:
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=255)
+    return _data_url_png(img)
+
+
+class AutoLayersUnitTests(TestCase):
+    """v5: mahsulotni tanlash, auto-segment filtri/birlashtirish, qoldiq ushlagich, tishlashsiz kesish."""
+
+    def _bool(self, shape, *rects):
+        import numpy as np
+
+        out = np.zeros(shape, dtype=bool)
+        for x0, y0, x1, y1 in rects:
+            out[y0:y1, x0:x1] = True
+        return out
+
+    def test_product_never_split_two_components_one_element(self):
+        from generation.auto_layers import select_product
+
+        shape = (400, 400)
+        # Kuzov + undan ajralgan g'ildirak (alohida komponentlar) + uzoqdagi ikonka karta.
+        salient = self._bool(shape, (100, 150, 300, 230), (130, 240, 170, 280), (20, 20, 60, 60))
+        objects = [{"name": "Mashina", "kind": "product", "x": 95, "y": 145, "width": 210, "height": 140, "z": 5}]
+        product = select_product(salient, objects)
+        self.assertIsNotNone(product)
+        self.assertEqual((product.name, product.kind), ("Mashina", "product"))
+        full = product.full(shape)
+        self.assertTrue(full[200, 200] and full[260, 150], "kuzov va g'ildirak — bitta maskada")
+        self.assertFalse(full[40, 40], "uzoqdagi karta mahsulotga qo'shilmaydi")
+
+    def test_product_without_gpt_box_uses_largest_plausible_component(self):
+        from generation.auto_layers import select_product
+
+        shape = (400, 400)
+        salient = self._bool(shape, (100, 100, 300, 300), (10, 10, 30, 30))
+        product = select_product(salient, [])
+        self.assertIsNotNone(product)
+        self.assertTrue(product.full(shape)[200, 200])
+        self.assertFalse(product.full(shape)[20, 20])
+        self.assertIsNone(select_product(self._bool(shape, (0, 0, 400, 380)), []), ">70% — fon")
+        self.assertIsNone(select_product(self._bool(shape, (10, 10, 40, 40)), []), "<5% — mahsulot emas")
+
+    def test_postprocess_filters_and_merges(self):
+        import numpy as np
+
+        from generation.auto_layers import Seg, postprocess_segments, select_product
+
+        shape = (400, 400)
+        product = select_product(self._bool(shape, (150, 150, 350, 350)),
+                                 [{"name": "Sumka", "kind": "product", "x": 150, "y": 150, "width": 200, "height": 200}])
+        glyph = self._bool(shape, (20, 300, 120, 330))
+        card_ring = self._bool(shape, (20, 20, 100, 100)) & ~self._bool(shape, (30, 30, 90, 90))
+        raw = [Seg.from_full(m) for m in (
+            self._bool(shape, (0, 0, 400, 300)),          # >45% — fon
+            self._bool(shape, (5, 5, 8, 8)),              # <0.15% — shovqin
+            self._bool(shape, (170, 170, 330, 260)),      # mahsulot ichida
+            self._bool(shape, (22, 302, 118, 328)),       # harflar
+            card_ring,                                     # karta ramkasi
+            self._bool(shape, (35, 35, 85, 85)),          # karta ichidagi ikonka
+            self._bool(shape, (40, 40, 60, 60)),          # ikonka ichidagi detal
+            self._bool(shape, (250, 20, 330, 90)),        # alohida badge
+        )]
+        objects = [{"name": "Ikonka kartasi", "kind": "graphic", "x": 18, "y": 18, "width": 85, "height": 85, "z": 2},
+                   {"name": "Sumka", "kind": "product", "x": 150, "y": 150, "width": 200, "height": 200}]
+        segs = postprocess_segments(raw, shape, product, glyph, objects)
+        self.assertEqual(len(segs), 2, [(s.name, s.bbox()) for s in segs])
+        card = next(s for s in segs if s.name == "Ikonka kartasi")
+        self.assertEqual(card.bbox(), (20, 20, 100, 100))
+        self.assertTrue(card.full(shape)[50, 50], "ramka + ikonka — bitta to'liq element")
+        self.assertEqual(card.z, 2.0)
+        other = next(s for s in segs if s is not card)
+        self.assertEqual(other.name, "Element 2")
+        self.assertEqual(other.bbox(), (250, 20, 330, 90))
+        self.assertTrue(np.all([s.kind == "graphic" for s in segs]))
+
+    def test_split_combined_mask_by_color(self):
+        import io
+
+        from PIL import Image, ImageDraw
+
+        from generation.auto_layers import split_combined_mask
+
+        img = Image.new("RGB", (100, 100), (0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([10, 10, 39, 39], fill=(200, 30, 30))
+        draw.rectangle([60, 60, 89, 89], fill=(30, 200, 30))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        masks = split_combined_mask(buf.getvalue(), (100, 100), 16)
+        self.assertEqual(sorted(int(m.sum()) for m in masks), [900, 900])
+
+    def test_leftover_catcher_finds_unlisted_shape(self):
+        import numpy as np
+
+        from generation.auto_layers import catch_leftovers
+
+        h, w = 400, 300
+        ys = np.linspace(0, 1, h)[:, None]
+        rgb = np.zeros((h, w, 3), dtype=np.uint8)
+        rgb[..., 0] = (40 + 80 * ys).astype(np.uint8)
+        rgb[..., 1] = 60
+        rgb[..., 2] = (200 - 60 * ys).astype(np.uint8)
+        rgb[50:150, 50:150] = (250, 250, 250)         # qoplangan element
+        rgb[300:330, 200:230] = (255, 220, 0)         # ro'yxatda yo'q yulduzcha
+        covered = self._bool((h, w), (48, 48, 152, 152))
+        found = catch_leftovers(rgb, covered)
+        self.assertEqual(len(found), 1, [s.bbox() for s in found])
+        x0, y0, x1, y1 = found[0].bbox()
+        self.assertTrue(x0 <= 200 and y0 <= 300 and x1 >= 230 and y1 >= 330, found[0].bbox())
+        self.assertEqual(found[0].name, "Qolgan element 1")
+        self.assertEqual(catch_leftovers(rgb, self._bool((h, w), (0, 0, w, h))), [])
+
+        # Ikki katta oq karta orasidagi fon tirqishi — "qoldiq" emas.
+        rgb2 = rgb.copy()
+        rgb2[300:330, 200:230] = rgb[300:330, 170:200]
+        rgb2[160:290, 20:130] = 250
+        rgb2[160:290, 160:280] = 250
+        covered2 = self._bool((h, w), (48, 48, 152, 152), (18, 158, 132, 292), (158, 158, 282, 292))
+        self.assertEqual([s.bbox() for s in catch_leftovers(rgb2, covered2)], [])
+
+    def test_leftover_catcher_skips_textured_photo_background(self):
+        import numpy as np
+
+        from generation.auto_layers import catch_leftovers
+
+        rng = np.random.default_rng(3)
+        rgb = rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)
+        self.assertEqual(catch_leftovers(rgb, np.zeros((200, 200), dtype=bool)), [])
+
+    def test_build_elements_no_bites(self):
+        import io
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        import numpy as np
+        from django.core.files.storage import default_storage
+        from django.test import override_settings
+        from PIL import Image
+
+        from generation.auto_layers import Seg
+        from generation.layers import _build_elements
+
+        rgb = np.full((100, 100, 3), 128, dtype=np.uint8)
+        car = Seg.from_full(self._bool((100, 100), (10, 10, 90, 90)), name="Mashina", kind="product", z=5)
+        badge = Seg.from_full(self._bool((100, 100), (60, 60, 95, 95)), name="Nishon", kind="graphic", z=8)
+        card = Seg.from_full(self._bool((100, 100), (0, 0, 30, 30)), name="Karta", kind="graphic", z=1)
+        with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media), \
+                patch.dict(os.environ, {"FAL_MOCK": "0"}):
+            elements = _build_elements([badge, car, card], rgb, 1)
+            self.assertEqual([e["name"] for e in elements], ["Karta", "Mashina", "Nishon"])
+            self.assertEqual([e["order"] for e in elements], [1, 2, 3])
+            car_el = elements[1]
+            with default_storage.open(car_el["url"][len("/api/layer-files/"):], "rb") as handle:
+                alpha = np.array(Image.open(io.BytesIO(handle.read())))[..., 3]
+            # Badge ostidagi joy mashinadan "tishlab" olinmagan.
+            self.assertEqual(int(alpha[75 - car_el["y"], 75 - car_el["x"]]), 255)
+
+    def test_clean_point_mask_and_payloads(self):
+        from generation.auto_layers import autoseg_payload, birefnet_payload, clean_point_mask, point_payload
+
+        mask = self._bool((100, 100), (10, 10, 40, 40), (60, 60, 90, 90))
+        mask[20:30, 20:30] = False
+        out = clean_point_mask(mask, 15, 15)
+        self.assertTrue(out[25, 25], "teshik to'ldiriladi")
+        self.assertFalse(out[70, 70], "boshqa obyekt olinmaydi")
+        self.assertTrue(clean_point_mask(mask, 45, 45)[15, 15], "yaqin komponent (≤24px)")
+        self.assertFalse(clean_point_mask(self._bool((100, 100)), 5, 5).any())
+        self.assertEqual(point_payload("u", 3, 4)["prompts"], [{"x": 3, "y": 4, "label": 1}])
+        self.assertTrue(birefnet_payload("u")["output_mask"])
+        self.assertEqual(autoseg_payload("u")["image_url"], "u")
+
+
 class MagicLayersPipelineTests(TestCase):
-    """v4 quvuri: matn + obyektlar + fon (fal/OpenAI soxta)."""
+    """v5 quvuri: matn + mahsulot (BiRefNet) + auto-segment + qoldiq + fon (fal/OpenAI soxta)."""
+
+    W, H = 400, 300
 
     def setUp(self):
         import tempfile
@@ -1465,20 +1649,26 @@ class MagicLayersPipelineTests(TestCase):
     def _card(self):
         from PIL import Image, ImageDraw
 
-        img = Image.new("RGB", (300, 200), (30, 90, 200))
+        img = Image.new("RGB", (self.W, self.H), (30, 90, 200))
         draw = ImageDraw.Draw(img)
-        draw.rectangle([40, 40, 200, 70], fill=(255, 255, 255))        # "matn"
-        draw.rectangle([150, 110, 260, 180], fill=(220, 20, 20))       # "mahsulot"
+        draw.rectangle([40, 30, 200, 60], fill=(255, 255, 255))         # "matn"
+        draw.rectangle([180, 120, 359, 189], fill=(220, 20, 20))        # mashina kuzovi
+        draw.ellipse([200, 185, 240, 225], fill=(20, 20, 20))           # g'ildiraklar
+        draw.ellipse([300, 185, 340, 225], fill=(20, 20, 20))
+        draw.rectangle([20, 120, 99, 199], fill=(40, 180, 90))          # ikonka kartasi
+        draw.rectangle([40, 140, 79, 179], fill=(250, 240, 60))         # ikonka
+        draw.rectangle([120, 240, 149, 269], fill=(255, 0, 200))        # GPT bilmagan yulduzcha
         return img, _data_url_png(img)
 
     def _blocks(self):
-        return [{"id": "text_abc", "text": "SALOM", "x": 45, "y": 45, "width": 140, "height": 22,
+        return [{"id": "text_abc", "text": "SALOM", "x": 45, "y": 35, "width": 140, "height": 22,
                  "fontSize": 18, "fontWeight": 700, "color": "#FFFFFF", "align": "left",
                  "fontFamily": "Inter", "lineHeight": 1.15, "letterSpacing": 0.0, "uppercase": True,
-                 "background": None, "rotation": 0, "source": {"x": 45, "y": 45, "width": 140, "height": 22}}]
+                 "background": None, "rotation": 0, "source": {"x": 45, "y": 35, "width": 140, "height": 22}}]
 
     def _objects(self):
-        return [{"name": "Mashina", "kind": "product", "x": 145, "y": 105, "width": 120, "height": 80, "z": 5}]
+        return [{"name": "Mashina", "kind": "product", "x": 175, "y": 115, "width": 190, "height": 85, "z": 5},
+                {"name": "Ikonka kartasi", "kind": "graphic", "x": 18, "y": 118, "width": 84, "height": 84, "z": 2}]
 
     def _read(self, url):
         import io
@@ -1491,27 +1681,47 @@ class MagicLayersPipelineTests(TestCase):
         with default_storage.open(url[len("/api/layer-files/"):], "rb") as handle:
             return np.array(Image.open(io.BytesIO(handle.read())))
 
-    def _fake_fal(self, calls, eraser_ok=True, sam_ok=True):
+    def _fake_fal(self, calls, eraser_ok=True, autoseg_ok=True, birefnet_ok=True, sam_ok=True):
         from PIL import Image
 
-        from generation import layers, object_layers
+        from generation import auto_layers, layers, object_layers
+
+        shape = (self.H, self.W)
 
         def fake(endpoint, payload, timeout=0):
             calls.append((endpoint, payload))
             if endpoint == layers.FAL_OCR_ENDPOINT:
-                return {"results": {"quad_boxes": [{"x": 38, "y": 38, "w": 165, "h": 35, "label": "SALOM"}]}}
+                return {"results": {"quad_boxes": [{"x": 38, "y": 28, "w": 165, "h": 35, "label": "SALOM"}]}}
+            if endpoint in (auto_layers.FAL_BIREFNET_ENDPOINT, auto_layers.FAL_BIREFNET_FALLBACK):
+                if not birefnet_ok:
+                    raise layers.GenerationError("birefnet down", status=502)
+                # Kuzov va g'ildiraklar — alohida komponentlar (bo'linib ketmasligi kerak).
+                return {"image": {"url": "x"}, "mask_image": {"url": _mask_png(
+                    shape, (180, 120, 360, 184), circles=((220, 205, 20), (320, 205, 20)))}}
+            if endpoint == auto_layers.FAL_AUTOSEG_ENDPOINT:
+                if not autoseg_ok:
+                    raise layers.GenerationError("autoseg down", status=502)
+                masks = [
+                    _mask_png(shape, (0, 0, self.W, self.H)),          # fon
+                    _mask_png(shape, (180, 120, 360, 190)),            # kuzov (mahsulot ichida)
+                    _mask_png(shape, circles=((220, 205, 20),)),       # g'ildirak (mahsulot ichida)
+                    _mask_png(shape, (40, 30, 201, 61)),               # matn
+                    _mask_png(shape, (20, 120, 100, 200)),             # karta
+                    _mask_png(shape, (40, 140, 80, 180)),              # ikonka
+                ]
+                return {"combined_mask": {"url": "x"}, "individual_masks": [{"url": m} for m in masks]}
             if endpoint == object_layers.FAL_SAM_ENDPOINT:
                 if not sam_ok:
                     raise layers.GenerationError("sam down", status=502)
                 box = payload["box_prompts"][0]
-                mask = Image.new("L", (300, 200), 0)
-                mask.paste(255, (150, 110, 261, 181))
-                assert box["x_min"] <= 150 and box["x_max"] >= 260
-                return {"image": {"url": _data_url_png(mask)}}
+                if box["x_min"] >= 150:  # mashina qutisi
+                    return {"image": {"url": _mask_png(shape, (180, 120, 360, 190),
+                                                       circles=((220, 205, 20), (320, 205, 20)))}}
+                return {"image": {"url": _mask_png(shape, (20, 120, 100, 200))}}
             if endpoint == object_layers.FAL_ERASER_ENDPOINT:
                 if not eraser_ok:
                     raise layers.GenerationError("eraser down", status=502)
-                return {"image": {"url": _data_url_png(Image.new("RGB", (300, 200), (30, 90, 200)))}}
+                return {"image": {"url": _data_url_png(Image.new("RGB", (self.W, self.H), (30, 90, 200)))}}
             raise AssertionError(f"kutilmagan fal chaqiruvi: {endpoint}")
         return fake
 
@@ -1537,77 +1747,94 @@ class MagicLayersPipelineTests(TestCase):
             }
         return out, files
 
-    def test_full_pipeline_text_objects_background(self):
+    def _by_name(self, out, files, name):
+        idx = next(i for i, e in enumerate(out["elements"]) if e["name"] == name)
+        return out["elements"][idx], files["elements"][idx]
+
+    def test_full_pipeline_v5(self):
         import numpy as np
 
-        from generation import layers, object_layers
+        from generation import auto_layers, layers, object_layers
 
         calls = []
         out, files = self._run(self._fake_fal(calls))
-        endpoints = [c[0] for c in calls]
-        self.assertEqual(sorted(endpoints), sorted([layers.FAL_OCR_ENDPOINT, object_layers.FAL_SAM_ENDPOINT,
-                                                    object_layers.FAL_ERASER_ENDPOINT]))
-        self.assertEqual(out["layersVersion"], 4)
+        endpoints = sorted(c[0] for c in calls)
+        self.assertEqual(endpoints, sorted([layers.FAL_OCR_ENDPOINT, auto_layers.FAL_BIREFNET_ENDPOINT,
+                                            auto_layers.FAL_AUTOSEG_ENDPOINT, object_layers.FAL_ERASER_ENDPOINT]))
+        self.assertEqual(out["layersVersion"], 5)
         self.assertTrue(out["textRemoved"])
         self.assertTrue(out["objectsRemoved"])
-        self.assertEqual((out["width"], out["height"]), (300, 200))
         img, _ = self._card()
         original = np.array(img)
-        self.assertTrue((files["base"][..., :3] == original).all(), "baseUrl — asl rasm nusxasi")
+        self.assertTrue((files["base"][..., :3] == original).all())
 
-        # SAM matnsiz (textClean) rasmda ishlaydi
-        sam_input = _decode_data_url_rgb(next(p for e, p in calls if e == object_layers.FAL_SAM_ENDPOINT)["image_url"])
-        self.assertLess(int(np.abs(sam_input[55, 120].astype(int) - [30, 90, 200]).max()), 12)
+        names = sorted(e["name"] for e in out["elements"])
+        self.assertEqual(names, ["Ikonka kartasi", "Mashina", "Qolgan element 1"], out["elements"])
+        products = [e for e in out["elements"] if e["kind"] == "product"]
+        self.assertEqual(len(products), 1, "mahsulot — BITTA element")
+        car, car_px = self._by_name(out, files, "Mashina")
+        self.assertEqual(tuple(car_px[150 - car["y"], 250 - car["x"]]), (220, 20, 20, 255))
+        self.assertEqual(int(car_px[205 - car["y"], 220 - car["x"], 3]), 255, "g'ildirak mashina ichida")
+        self.assertLess(car["y"] + car["height"], 232)
 
-        [text] = out["textLayers"]
-        self.assertEqual((text["x"], text["y"], text["width"], text["height"]), (40, 40, 161, 31))
-        box = text["imageBox"]
-        self.assertEqual(box, text["source"])
-        cut = files["texts"][0]
-        self.assertEqual(cut.shape, (box["height"], box["width"], 4))
-        inside = cut[55 - box["y"], 120 - box["x"]]
-        self.assertEqual(tuple(inside), (255, 255, 255, 255), "asl harf pikseli to'liq ko'rinadi")
-
-        [element] = out["elements"]
-        self.assertTrue(element["id"].startswith("el_"))
-        self.assertEqual((element["name"], element["kind"], element["order"]), ("Mashina", "product", 1))
-        el = files["elements"][0]
-        self.assertEqual(el.shape, (element["height"], element["width"], 4))
-        self.assertEqual(tuple(el[145 - element["y"], 200 - element["x"]]), (220, 20, 20, 255))
+        card, card_px = self._by_name(out, files, "Ikonka kartasi")
+        self.assertEqual(tuple(card_px[160 - card["y"], 60 - card["x"]]), (250, 240, 60, 255), "ikonka kartada")
+        self.assertEqual(tuple(card_px[125 - card["y"], 25 - card["x"]]), (40, 180, 90, 255))
+        star, _ = self._by_name(out, files, "Qolgan element 1")
+        self.assertTrue(star["x"] <= 120 and star["y"] <= 240 and star["x"] + star["width"] >= 150)
+        self.assertEqual(star["kind"], "graphic")
+        # order: karta (z=2) < qolgan (z=3) < mahsulot (z=5)
+        orders = {e["name"]: e["order"] for e in out["elements"]}
+        self.assertLess(orders["Ikonka kartasi"], orders["Mashina"])
+        self.assertLess(orders["Qolgan element 1"], orders["Mashina"])
 
         bg = files["background"]
-        self.assertEqual(tuple(bg[145, 200]), (30, 90, 200), "mahsulot o'rni to'ldirilgan")
-        self.assertEqual(tuple(bg[55, 120]), tuple(files["clean"][55, 120]))
-        clean = files["clean"]
-        far = np.ones((200, 300), dtype=bool)
-        far[95:196, 135:276] = False
-        self.assertTrue((bg[far] == clean[far]).all(), "maskadan tashqarisi o'zgarmaydi")
+        for x, y in ((250, 150), (220, 205), (60, 160), (135, 255), (120, 45)):
+            self.assertLess(int(np.abs(bg[y, x].astype(int) - [30, 90, 200]).max()), 12, (x, y, bg[y, x]))
+
+        # Eraser maskasi harflarni ham qamraydi.
+        eraser_payload = next(p for e, p in calls if e == object_layers.FAL_ERASER_ENDPOINT)
+        mask = _decode_data_url_rgb(eraser_payload["mask_url"])[..., 0] > 127
+        self.assertTrue(mask[45, 120] and mask[150, 250] and mask[255, 135])
+        self.assertFalse(mask[10, 390])
+
+    def test_autoseg_failure_falls_back_to_box_prompt(self):
+        from generation import object_layers
+
+        calls = []
+        out, files = self._run(self._fake_fal(calls, autoseg_ok=False))
+        self.assertIn(object_layers.FAL_SAM_ENDPOINT, [c[0] for c in calls])
+        names = sorted(e["name"] for e in out["elements"])
+        self.assertIn("Ikonka kartasi", names)
+        self.assertIn("Mashina", names)
+        self.assertEqual(sum(1 for e in out["elements"] if e["kind"] == "product"), 1)
+
+    def test_birefnet_failure_uses_sam_for_product(self):
+        calls = []
+        out, files = self._run(self._fake_fal(calls, birefnet_ok=False))
+        self.assertIn("Mashina", [e["name"] for e in out["elements"]])
 
     def test_eraser_failure_uses_opencv(self):
         out, files = self._run(self._fake_fal([], eraser_ok=False))
         self.assertTrue(out["objectsRemoved"])
-        self.assertEqual(len(out["elements"]), 1)
-        self.assertLess(int(abs(int(files["background"][145, 200][0]) - 30)), 40)
+        self.assertLess(abs(int(files["background"][150, 250][0]) - 30), 40)
 
-    def test_sam_failure_skips_object(self):
-        out, files = self._run(self._fake_fal([], sam_ok=False))
-        self.assertEqual(out["elements"], [])
-        self.assertFalse(out["objectsRemoved"])
+    def test_all_segmentation_down_keeps_text(self):
+        out, files = self._run(self._fake_fal([], autoseg_ok=False, birefnet_ok=False, sam_ok=False))
         self.assertTrue(out["textRemoved"])
-        self.assertEqual(out["backgroundUrl"], out["cleanUrl"])
+        self.assertEqual(len(out["textLayers"]), 1)
+        # Qoldiq ushlagich baribir ajratadi — hech narsa fonda "yopishib" qolmaydi.
+        self.assertTrue(all(e["name"].startswith("Qolgan element") for e in out["elements"]))
+        self.assertGreaterEqual(len(out["elements"]), 2)
 
-    def test_openai_failure_returns_original_background(self):
-        import numpy as np
-
+    def test_openai_failure_still_segments(self):
         calls = []
         out, files = self._run(self._fake_fal(calls), detect=([], []))
         self.assertEqual(out["textLayers"], [])
-        self.assertEqual(out["elements"], [])
         self.assertFalse(out["textRemoved"])
-        self.assertFalse(out["objectsRemoved"])
-        self.assertEqual(out["backgroundUrl"], out["baseUrl"])
-        img, _ = self._card()
-        self.assertTrue((files["background"][..., :3] == np.array(img)).all())
+        # GPT yo'q: mahsulot — eng katta salient komponent; karta — auto-segment.
+        self.assertEqual(sum(1 for e in out["elements"] if e["kind"] == "product"), 1)
+        self.assertTrue(out["objectsRemoved"])
 
     def test_no_fal_key_still_edits_text(self):
         calls = []
@@ -1625,9 +1852,8 @@ class MagicLayersPipelineTests(TestCase):
             out, files = self._run(self._fake_fal([]))
         self.assertIsNone(out["cleanUrl"])
         self.assertFalse(out["textRemoved"])
-        self.assertEqual(len(out["textLayers"]), 1)
         self.assertIsNone(out["textLayers"][0]["imageUrl"])
-        self.assertEqual(len(out["elements"]), 1, "obyektlar baribir ajratiladi")
+        self.assertIn("Mashina", [e["name"] for e in out["elements"]])
 
     def test_mock_mode(self):
         import os
@@ -1640,15 +1866,168 @@ class MagicLayersPipelineTests(TestCase):
         source = _png_data_url(108, 144)
         with patch.dict(os.environ, {"FAL_MOCK": "1"}), override_settings(MEDIA_ROOT=self._media.name):
             out = layers.decompose_layers(source, user_id=1)
-            self.assertEqual(self._read(out["backgroundUrl"]).shape[:2], (144, 108))
-            self.assertEqual(self._read(out["elements"][0]["url"]).shape[:2], (72, 54))
+            product = next(e for e in out["elements"] if e["kind"] == "product")
+            self.assertEqual(self._read(product["url"]).shape[:2], (72, 54))
         self.assertEqual(out["backgroundUrl"], out["baseUrl"])
-        self.assertEqual((out["width"], out["height"]), (108, 144))
         self.assertEqual(len(out["textLayers"]), 2)
-        self.assertTrue(all(t["imageUrl"] and t["imageBox"] for t in out["textLayers"]))
-        self.assertEqual(len(out["elements"]), 1)
-        self.assertEqual(out["layersVersion"], 4)
+        self.assertEqual(len(out["elements"]), 3)
+        self.assertEqual(sorted(e["kind"] for e in out["elements"]), ["graphic", "graphic", "product"])
+        self.assertEqual(sorted(e["order"] for e in out["elements"]), [1, 2, 3])
+        self.assertEqual(out["layersVersion"], 5)
 
+
+class MagicLayersExtractTests(TestCase):
+    """POST /api/generations/{id}/results/{variant}/layers/extract."""
+
+    W, H = 200, 160
+
+    def setUp(self):
+        import tempfile
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+        from django.test import override_settings
+        from PIL import Image, ImageDraw
+
+        self._media = tempfile.TemporaryDirectory()
+        self.addCleanup(self._media.cleanup)
+        override = override_settings(MEDIA_ROOT=self._media.name)
+        override.enable()
+        self.addCleanup(override.disable)
+
+        self.client = APIClient()
+        self.user = User(username="extract@test.uz", email="extract@test.uz", name="Ex", balance=5)
+        self.user.set_password("testpass123")
+        self.user.save()
+        self.client.force_authenticate(self.user)
+
+        img = Image.new("RGB", (self.W, self.H), (30, 90, 200))
+        ImageDraw.Draw(img).rectangle([50, 40, 89, 79], fill=(255, 200, 0))
+        bg_path = default_storage.save(f"generated/user_{self.user.pk}/layers/bg_0123456789abcdef.png",
+                                       ContentFile(_png_from_img(img)))
+        self.bg_url = "/api/layer-files/" + bg_path
+        self.job = GenerationJob.objects.create(user=self.user, content_type="card", status="success", results=[{
+            "id": "r1", "url": PIXEL_PNG, "width": self.W, "height": self.H, "layersVersion": 5,
+            "baseUrl": self.bg_url, "backgroundUrl": self.bg_url, "cleanUrl": None, "textLayers": [],
+            "elements": [{"id": "el_a", "name": "Mashina", "kind": "product", "url": self.bg_url,
+                          "x": 0, "y": 0, "width": 10, "height": 10, "order": 1}],
+            "textRemoved": False, "objectsRemoved": True,
+        }])
+        self.url = f"/api/generations/{self.job.pk}/results/1/layers/extract"
+
+    def _post(self, body, mask_rects=None, full=False, **env):
+        import os
+        from unittest.mock import patch
+
+        from PIL import Image
+
+        from generation import object_layers
+
+        calls = []
+
+        def fake(endpoint, payload, timeout=0):
+            calls.append((endpoint, payload))
+            if endpoint == object_layers.FAL_SAM_ENDPOINT:
+                rects = [(0, 0, self.W, self.H)] if full else (mask_rects or [])
+                return {"image": {"url": _mask_png((self.H, self.W), *rects)}}
+            if endpoint == object_layers.FAL_ERASER_ENDPOINT:
+                return {"image": {"url": _data_url_png(Image.new("RGB", (self.W, self.H), (30, 90, 200)))}}
+            raise AssertionError(endpoint)
+
+        with patch.dict(os.environ, {"FAL_KEY": "fal-test", "FAL_MOCK": "0", **env}), \
+                patch("generation.layers._fal_run", side_effect=fake):
+            response = self.client.post(self.url, body, format="json")
+        return response, calls
+
+    def _read(self, url):
+        import io
+
+        import numpy as np
+        from django.core.files.storage import default_storage
+        from PIL import Image
+
+        path = url[url.index("/api/layer-files/") + len("/api/layer-files/"):]
+        with default_storage.open(path, "rb") as handle:
+            return np.array(Image.open(io.BytesIO(handle.read())))
+
+    def test_happy_path(self):
+        from generation import object_layers
+
+        r, calls = self._post({"x": 70, "y": 60}, mask_rects=[(50, 40, 90, 80)])
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+        el = body["element"]
+        self.assertEqual(set(el), {"id", "name", "kind", "url", "x", "y", "width", "height", "order"})
+        self.assertEqual((el["kind"], el["order"], el["name"]), ("graphic", 2, "Element 2"))
+        self.assertTrue(el["url"].startswith("http"))
+        self.assertEqual(calls[0][1]["prompts"], [{"x": 70, "y": 60, "label": 1}])
+        self.assertIn(object_layers.FAL_ERASER_ENDPOINT, [c[0] for c in calls])
+        px = self._read(el["url"])
+        self.assertEqual(tuple(px[60 - el["y"], 70 - el["x"]]), (255, 200, 0, 255))
+        bg = self._read(body["backgroundUrl"])
+        self.assertEqual(tuple(bg[60, 70]), (30, 90, 200), "fon to'ldirildi")
+        self.assertNotIn(self.bg_url, body["backgroundUrl"])
+
+        self.job.refresh_from_db()
+        stored = self.job.results[0]
+        self.assertEqual(len(stored["elements"]), 2)
+        self.assertEqual(stored["elements"][1]["id"], el["id"])
+        self.assertTrue(stored["elements"][1]["url"].startswith("/api/layer-files/"))
+        self.assertTrue(body["backgroundUrl"].endswith(stored["backgroundUrl"]))
+        self.assertEqual(stored["layersVersion"], 5)
+
+    def test_nothing_found(self):
+        r, _ = self._post({"x": 10, "y": 10}, mask_rects=[])
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.json()["error"], "NOTHING_FOUND")
+        self.assertTrue(r.json()["message"])
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.results[0]["backgroundUrl"], self.bg_url)
+
+    def test_too_large(self):
+        r, _ = self._post({"x": 10, "y": 10}, full=True)
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.json()["error"], "TOO_LARGE")
+
+    def test_out_of_bounds_and_bad_input(self):
+        r, calls = self._post({"x": 5000, "y": 10})
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(calls, [])
+        r, _ = self._post({"x": "abc", "y": 10})
+        self.assertEqual(r.status_code, 400)
+
+    def test_not_owner(self):
+        other = User(username="other@test.uz", email="other@test.uz", name="O", balance=5)
+        other.set_password("testpass123")
+        other.save()
+        self.client.force_authenticate(other)
+        r, calls = self._post({"x": 70, "y": 60}, mask_rects=[(50, 40, 90, 80)])
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(calls, [])
+
+    def test_requires_v5_layers(self):
+        results = list(self.job.results)
+        results[0] = {**results[0], "layersVersion": 4}
+        self.job.results = results
+        self.job.save()
+        r, _ = self._post({"x": 70, "y": 60}, mask_rects=[(50, 40, 90, 80)])
+        self.assertEqual(r.status_code, 409)
+
+    def test_mock_mode_crop_around_point(self):
+        r, calls = self._post({"x": 70, "y": 60}, FAL_MOCK="1")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(calls, [])
+        el = r.json()["element"]
+        self.assertTrue(el["x"] <= 70 < el["x"] + el["width"] and el["y"] <= 60 < el["y"] + el["height"])
+        self.assertLess(el["width"], self.W // 4)
+
+
+def _png_from_img(img):
+    import io
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 class LayerFileEndpointTests(TestCase):
     def setUp(self):
@@ -1736,21 +2115,21 @@ class MagicLayersViewCacheTests(TestCase):
                             "imageBox": {"x": 0, "y": 0, "width": 1, "height": 1}}],
             "textRemoved": True,
             "objectsRemoved": True,
-            "layersVersion": 4,
+            "layersVersion": 5,
             **extra,
         }
 
-    def test_v3_cache_is_recomputed_and_v4_stored(self):
+    def test_v4_cache_is_recomputed_and_v5_stored(self):
         from unittest.mock import patch
 
-        job = self._job({"textLayers": [{"id": "x"}], "cleanUrl": "/media/c.png", "layersVersion": 3})
+        job = self._job({"textLayers": [{"id": "x"}], "cleanUrl": "/media/c.png", "layersVersion": 4})
         with patch("generation.views.decompose_layers", return_value=self._decomposed()) as decompose:
             r = self.client.post(f"/api/generations/{job.pk}/results/1/layers", {}, format="json")
 
         self.assertEqual(r.status_code, 200, r.content)
         self.assertTrue(decompose.called)
         body = r.json()
-        self.assertEqual(body["layersVersion"], 4)
+        self.assertEqual(body["layersVersion"], 5)
         self.assertTrue(body["textRemoved"])
         self.assertTrue(body["objectsRemoved"])
         for url in (body["baseUrl"], body["backgroundUrl"], body["elements"][0]["url"],
@@ -1763,7 +2142,7 @@ class MagicLayersViewCacheTests(TestCase):
 
         job.refresh_from_db()
         stored = job.results[0]
-        self.assertEqual(stored["layersVersion"], 4)
+        self.assertEqual(stored["layersVersion"], 5)
         self.assertEqual(stored["backgroundUrl"], "/api/layer-files/generated/user_1/layers/bg_x.png")
         self.assertEqual(stored["baseUrl"], "/api/layer-files/generated/user_1/layers/base_x.png")
         self.assertEqual(stored["url"], PIXEL_PNG, "asl natija URL'i o'zgarmaydi")
@@ -1772,9 +2151,9 @@ class MagicLayersViewCacheTests(TestCase):
         self.assertTrue(result["elements"][0]["url"].startswith("http"))
         self.assertTrue(result["textLayers"][0]["imageUrl"].startswith("http"))
         self.assertTrue(result["objectsRemoved"])
-        self.assertEqual(result["layersVersion"], 4)
+        self.assertEqual(result["layersVersion"], 5)
 
-    def test_v4_cache_is_returned(self):
+    def test_v5_cache_is_returned(self):
         from unittest.mock import patch
 
         job = self._job(self._decomposed())
@@ -1785,11 +2164,11 @@ class MagicLayersViewCacheTests(TestCase):
         self.assertFalse(decompose.called)
         body = r.json()
         self.assertTrue(body["cached"])
-        self.assertEqual(body["layersVersion"], 4)
+        self.assertEqual(body["layersVersion"], 5)
         self.assertTrue(body["backgroundUrl"].endswith("bg_x.png"))
         self.assertEqual(len(body["elements"]), 1)
 
-    def test_force_recomputes_v4_cache(self):
+    def test_force_recomputes_v5_cache(self):
         from unittest.mock import patch
 
         job = self._job(self._decomposed())

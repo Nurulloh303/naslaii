@@ -17,12 +17,20 @@ import logging
 
 from billing.pricing import TOKENS_PER_IMAGE, quote_for
 from billing.services import InsufficientBalance, debit, key_debit, refund, refund_job
-from config.throttling import AnalyzeThrottle, GenerationThrottle
+from config.throttling import AnalyzeThrottle, GenerationThrottle, LayerExtractThrottle
 from accounts.models import ApiKey
 
 from .analyze import analyze_image
 from .imaging import normalize_generated_image
-from .layers import LAYER_FILES_URL, LAYERS_VERSION, decompose_layers
+from .layers import (
+    LAYER_FILES_URL,
+    LAYERS_VERSION,
+    ExtractError,
+    decompose_layers,
+    extract_element,
+    read_layer_image,
+    store_layer_file,
+)
 from .listing import generate_listing
 from .models import GenerationJob
 from .plan import build_plan
@@ -31,6 +39,7 @@ from .style_templates import load_style_templates, resolve_style_template_path, 
 from .tasks import enqueue
 from .serializers import (
     GenerationCreateSerializer,
+    _absolute,
     layers_fields,
     is_image_data_url,
     job_payload,
@@ -613,12 +622,13 @@ def project_listing(request, pk: int):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def magic_layers_view(request, pk: int, variant: int):
-    """Magic Layers v4: slaydni Canva "Magic Layers" kabi qatlamlarga ajratadi.
+    """Magic Layers v5: slaydni Canva "Magic Layers" kabi qatlamlarga ajratadi.
 
     Javob: ``baseUrl`` (asl rasm), ``backgroundUrl`` (matn va obyektlarsiz, to'ldirilgan
     fon), ``elements`` (har bir obyekt — RGBA PNG va joyi), ``textLayers`` (tahrirlanadigan
     matn + asl harflar kesmasi ``imageUrl``/``imageBox``). Barcha fayl URL'lari
-    ``/api/layer-files/...`` orqali (CORS bilan). v4 natijasi keshlanadi (``force`` — qayta).
+    ``/api/layer-files/...`` orqali (CORS bilan). Faqat v5 natijasi keshlanadi (eski versiyalar
+    ochilganda qayta hisoblanadi; ``force`` — majburan qayta).
     """
     job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
     if job is None:
@@ -691,6 +701,95 @@ def magic_layers_view(request, pk: int, variant: int):
     job.save(update_fields=["results", "updated_at"])
 
     return respond(target_result)
+
+
+def _int_or_none(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or abs(number) > 1e6:
+        return None
+    return int(round(number))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([LayerExtractThrottle])
+def magic_layers_extract_view(request, pk: int, variant: int):
+    """Magic Layers v5: fonda bosilgan nuqtadagi obyektni alohida element qiladi.
+
+    ``POST /api/generations/{id}/results/{variant}/layers/extract`` ``{x, y}`` (rasm px).
+    Joriy ``backgroundUrl`` ustida SAM2 point prompt → element (RGBA); fonning o'sha joyi
+    eraser bilan to'ldirilib, YANGI fon PNG saqlanadi. Element saqlangan natijaga qo'shiladi.
+    Javob: ``{element, backgroundUrl}``. 422 — ``NOTHING_FOUND`` / ``TOO_LARGE``.
+    """
+    from django.db import transaction
+
+    from . import object_layers as ol
+    from . import text_eraser as te
+
+    job = GenerationJob.objects.filter(pk=pk, user=request.user).first()
+    if job is None:
+        return Response({"error": "JOB_NOT_FOUND", "message": "Vazifa topilmadi"}, status=404)
+    results = list(job.results or [])
+    if variant < 1 or variant > len(results):
+        return Response({"error": "RESULT_NOT_FOUND", "message": "Bunday slayd yo'q"}, status=404)
+    target_result = dict(results[variant - 1])
+    background_url = str(target_result.get("backgroundUrl") or "")
+    if target_result.get("layersVersion") != LAYERS_VERSION or not background_url.startswith(LAYER_FILES_URL):
+        return Response({"error": "LAYERS_NOT_READY", "message": "Avval qatlamlarga ajrating"}, status=409)
+
+    x, y = _int_or_none(request.data.get("x")), _int_or_none(request.data.get("y"))
+    if x is None or y is None:
+        return Response({"error": "INVALID_POINT", "message": "x va y butun son bo'lishi kerak"}, status=400)
+
+    existing = [e for e in (target_result.get("elements") or []) if isinstance(e, dict)]
+    number = max([int(e.get("order") or 0) for e in existing] + [len(existing)]) + 1
+    try:
+        background_bytes = read_layer_image(background_url)
+        element, filled_rgb, fill_mask = extract_element(background_bytes, x, y, request.user.pk, number)
+    except ExtractError as error:
+        return Response({"error": error.code, "message": str(error)}, status=422)
+    except GenerationError as error:
+        return Response({"error": error.code or "EXTRACT_FAILED", "message": str(error)},
+                        status=error.status if error.status and error.status != 500 else 502)
+    except Exception as error:
+        logger.exception("Magic layers extract xatolik: %s", error)
+        return Response({"error": "EXTRACT_FAILED", "message": "Obyektni ajratib bo'lmadi"}, status=502)
+
+    try:
+        with transaction.atomic():
+            locked = GenerationJob.objects.select_for_update().get(pk=job.pk)
+            results = list(locked.results or [])
+            current = dict(results[variant - 1]) if variant <= len(results) else target_result
+            current_bg = str(current.get("backgroundUrl") or "")
+            if current_bg and current_bg != background_url:
+                # Parallel boshqa ajratish fonni yangilagan — bizning to'ldirishni yangi fon ustiga qo'yamiz.
+                newer = te.decode_rgb(read_layer_image(current_bg))[0]
+                if newer.shape == filled_rgb.shape:
+                    filled_rgb = ol.paste_inside(newer, filled_rgb, fill_mask)
+            new_background = store_layer_file(te.encode_png(filled_rgb), request.user.pk, "bg")
+            elements = [e for e in (current.get("elements") or []) if isinstance(e, dict)]
+            element["order"] = max([int(e.get("order") or 0) for e in elements] + [len(elements)]) + 1
+            element["name"] = f"Element {element['order']}"
+            elements.append(element)
+            current["elements"] = elements
+            current["backgroundUrl"] = new_background
+            current["objectsRemoved"] = True
+            results[variant - 1] = current
+            locked.results = results
+            locked.save(update_fields=["results", "updated_at"])
+    except Exception as error:
+        logger.exception("Magic layers extract: saqlashda xatolik: %s", error)
+        return Response({"error": "EXTRACT_FAILED", "message": "Natijani saqlab bo'lmadi"}, status=502)
+
+    return Response({
+        "element": {**element, "url": _absolute(element["url"], request)},
+        "backgroundUrl": _absolute(new_background, request),
+    })
 
 
 # Faqat Magic Layers fayllari: generated/user_<id>/layers/<nom>.<kengaytma>.
