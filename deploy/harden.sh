@@ -17,6 +17,7 @@
 # serverdan chiqarib qo'yishi mumkin) — oxirida tavsiya chiqaradi.
 # =====================================================================
 set -euo pipefail
+trap 'echo -e "\n\033[1;31m✗ Skript ${LINENO}-qatorda to\x27xtadi. Shu xabarni yuboring.\033[0m" >&2' ERR
 
 if [[ $EUID -ne 0 ]]; then
   echo "Root sifatida ishga tushiring: sudo bash deploy/harden.sh" >&2
@@ -25,7 +26,12 @@ fi
 
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
-SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
+# `sshd -T` ba'zi serverlarda (/run/sshd yo'q bo'lsa) xato qaytaradi — set -e
+# skriptni jimgina to'xtatib qo'ymasligi uchun `|| true`.
+SSH_PORT="$( (sshd -T 2>/dev/null || true) | awk '/^port /{print $2; exit}')"
+if [[ -z "$SSH_PORT" ]]; then
+  SSH_PORT="$(grep -hE '^\s*Port\s+[0-9]+' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $2; exit}' || true)"
+fi
 SSH_PORT="${SSH_PORT:-22}"
 NGINX_ACCESS_LOG="${NGINX_ACCESS_LOG:-/var/log/nginx/access.log}"
 BLOCK_RANGES="${BLOCK_RANGES:-79.124.58.0/24}"
@@ -35,7 +41,7 @@ TRUSTED_IPS="${TRUSTED_IPS:-}"
 say "Paketlar o'rnatilmoqda (ufw, fail2ban, unattended-upgrades)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ufw fail2ban unattended-upgrades >/dev/null
+apt-get install -y -qq ufw fail2ban unattended-upgrades python3-systemd >/dev/null
 
 # ---------------------------------------------------------------- 1. ufw
 say "Firewall sozlanmoqda (SSH port: ${SSH_PORT})"
@@ -121,11 +127,14 @@ if ! systemctl list-unit-files | grep -q '^naslaii.service'; then
   sed -i '/^\[naslai-admin\]/,/^$/ s/^enabled = true/enabled = false/' /etc/fail2ban/jail.d/naslai.local
 fi
 
-fail2ban-client -t >/dev/null
+if ! fail2ban-client -t >/dev/null 2>&1; then
+  echo "   ⚠ fail2ban sozlamasida xato:"; fail2ban-client -t || true
+  exit 1
+fi
 systemctl enable fail2ban >/dev/null 2>&1
 systemctl restart fail2ban
-sleep 2
-fail2ban-client status | sed 's/^/   /'
+for _ in 1 2 3 4 5; do fail2ban-client ping >/dev/null 2>&1 && break; sleep 2; done
+fail2ban-client status | sed 's/^/   /' || echo "   ⚠ fail2ban javob bermadi: sudo journalctl -u fail2ban -n 30"
 
 # --------------------------------------------------------------- 3. nginx
 if command -v nginx >/dev/null 2>&1; then
@@ -153,12 +162,12 @@ systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
 # --------------------------------------------------------------- tekshiruv
 say "Ochiq portlar (tashqariga faqat 22/80/443 ko'rinishi kerak)"
 ss -tlnp | awk 'NR==1 || /LISTEN/' | sed 's/^/   /'
-if ss -tlnp | grep -qE '0\.0\.0\.0:6379|\[::\]:6379'; then
+if (ss -tlnp || true) | grep -qE '0\.0\.0\.0:6379|\[::\]:6379'; then
   echo "   ⚠ Redis barcha manzillarda tinglayapti. ufw uni yopdi, lekin /etc/redis/redis.conf da 'bind 127.0.0.1 ::1' qo'yish tavsiya etiladi."
 fi
 
 say "SSH bo'yicha tavsiya (avtomatik o'zgartirilmadi)"
-sshd -T 2>/dev/null | grep -E '^(permitrootlogin|passwordauthentication) ' | sed 's/^/   hozir: /'
+(sshd -T 2>/dev/null || true) | grep -E '^(permitrootlogin|passwordauthentication) ' | sed 's/^/   hozir: /' || true
 cat <<'TIP'
    Eng kuchli himoya — SSH kalit bilan kirish va parolni o'chirish.
    Buni faqat SSH kalit bilan kira olishingizni tekshirgandan keyin qiling,
