@@ -19,7 +19,7 @@ def _slide_entry(type_id: str, headline: str, subtitle: str, lines: list[str]) -
     return {"id": uuid.uuid4().hex, "type": type_id, "headline": headline, "subtitle": subtitle, "lines": lines}
 
 
-def build_plan(brief: dict, settings: dict) -> list[dict]:
+def build_plan(brief: dict, settings: dict, use_ai: bool = False) -> list[dict]:
     language = settings.get("language") or "uz"
     title = str(brief.get("title") or "").strip()
     subtitle = str(brief.get("subtitle") or "").strip()
@@ -38,9 +38,9 @@ def build_plan(brief: dict, settings: dict) -> list[dict]:
 
     pages = int(settings.get("pages") or 1)
     if pages > 1:
-        return [
-            _slide_entry(SLIDE_TYPE_IDS[index % len(SLIDE_TYPE_IDS)], headline, subtitle, lines)
-            for index in range(pages)
-        ]
+        # Har sahifaga o'z, takrorlanmaydigan matni (AI kopirayter yoki zaxira taqsimot).
+        from .page_copy import build_page_copy
+
+        return build_page_copy(brief, settings, min(pages, 5), use_ai=use_ai)
 
     return [_slide_entry("main", headline, subtitle, lines)]

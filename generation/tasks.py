@@ -24,6 +24,30 @@ from .providers import get_provider
 logger = logging.getLogger(__name__)
 
 
+def _ensure_page_copy(job: GenerationJob) -> None:
+    """Ko'p sahifali to'plamda har sahifaning matni har xil bo'lishi kerak.
+
+    Reja yo'q yoki eski (hamma sahifada bir xil) bo'lsa — yangisini yozamiz.
+    Xato hech qachon generatsiyani to'xtatmaydi.
+    """
+    settings = dict(job.settings or {})
+    pages = int(settings.get("pages") or 1)
+    if pages <= 1 or settings.get("contentType", "card") not in ("card", "copyStyle") or settings.get("textMode") == "own":
+        return
+    try:
+        from .page_copy import build_page_copy, plan_is_repetitive
+
+        plan = settings.get("plan")
+        if isinstance(plan, list) and len(plan) >= pages and not plan_is_repetitive(plan[:pages]):
+            return
+        brief = {"title": job.title, "subtitle": job.subtitle, "category": job.category, "benefits": job.benefits}
+        settings["plan"] = build_page_copy(brief, settings, min(pages, 5), use_ai=True)
+        job.settings = settings
+        job.save(update_fields=["settings", "updated_at"])
+    except Exception:  # noqa: BLE001 — matn rejasi generatsiyani buzmasligi kerak
+        logger.exception("Sahifa matnini tayyorlab bo'lmadi")
+
+
 def run_job(job: GenerationJob) -> None:
     """Собственно прогон. Вынесен из задачи, чтобы его можно было вызвать
     напрямую — из тестов и из команды перезапуска.
@@ -38,6 +62,7 @@ def run_job(job: GenerationJob) -> None:
 
     provider = get_provider()
     total = total_renders(job.settings or {})
+    _ensure_page_copy(job)
 
     try:
         results = []

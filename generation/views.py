@@ -17,7 +17,7 @@ import logging
 
 from billing.pricing import TOKENS_PER_IMAGE, quote_for
 from billing.services import InsufficientBalance, debit, key_debit, refund, refund_job
-from config.throttling import AnalyzeThrottle, GenerationThrottle, LayerExtractThrottle
+from config.throttling import AnalyzeThrottle, GenerationThrottle, LayerExtractThrottle, PlanThrottle
 from accounts.models import ApiKey
 
 from .analyze import analyze_image
@@ -528,11 +528,14 @@ def regenerate_slide(request, pk: int, variant: int):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([PlanThrottle])
 def plan_view(request):
     """Matn rejasi: brif bo'yicha, modelsiz, bepul va mgnovenno."""
     brief = request.data.get("brief") or {}
     settings_payload = request.data.get("settings") or {}
-    return Response({"plan": build_plan(brief, settings_payload)})
+    # AI kopirayter faqat kirgan foydalanuvchiga (OpenAI chaqiruvi pullik).
+    use_ai = bool(getattr(request.user, "is_authenticated", False))
+    return Response({"plan": build_plan(brief, settings_payload, use_ai=use_ai)})
 
 
 @api_view(["PUT"])

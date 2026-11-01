@@ -770,6 +770,34 @@ def page_indicator_rule(page_index: int, pages: int) -> str:
     )
 
 
+def page_text(settings: dict, page_index: int) -> dict | None:
+    """Shu sahifa uchun saqlangan (foydalanuvchi tekshirgan) matn."""
+    plan = (settings or {}).get("plan") or []
+    if not isinstance(plan, list) or page_index >= len(plan) or not isinstance(plan[page_index], dict):
+        return None
+    entry = plan[page_index]
+    headline = str(entry.get("headline") or "").strip()
+    if not headline:
+        return None
+    return {
+        "headline": headline,
+        "subtitle": str(entry.get("subtitle") or "").strip(),
+        "lines": [str(x).strip() for x in (entry.get("lines") or []) if str(x or "").strip()],
+    }
+
+
+def exact_text_block(text: dict, hint: str) -> str:
+    """Sahifaga yoziladigan matn — so'zma-so'z (foydalanuvchi tekshirgan reja)."""
+    lines = "\n".join(f"  - {line}" for line in text["lines"]) or "  (none)"
+    subtitle = text["subtitle"] or "(none)"
+    return (
+        "TEXT ON THIS PAGE — write EXACTLY these words (already in " + hint + "), nothing else, no extra slogans:\n"
+        f"  Headline: {text['headline']}\n"
+        f"  Subtitle: {subtitle}\n"
+        f"  Badges / captions / feature labels:\n{lines}\n"
+        "Do not repeat any text from other pages of the set."
+    )
+
 def set_page_prompt(brief: dict, settings: dict, variant: int, page_index: int, pages: int) -> str:
     """2-sahifa va undan keyingilar uchun TO'LIQ ko'rsatma (muqova ko'rsatmasiga qo'shimcha emas).
 
@@ -785,7 +813,11 @@ def set_page_prompt(brief: dict, settings: dict, variant: int, page_index: int, 
     if isinstance(focus_list, (list, tuple)) and page_index < len(focus_list):
         custom_focus = str(focus_list[page_index] or "").strip()
 
-    if benefits:
+    planned = page_text(settings, page_index)
+    if planned:
+        headline = exact_text_block(planned, hint)
+        facts = ""
+    elif benefits:
         main_benefit = benefits[(page_index - 1) % len(benefits)]
         headline = (
             f"Headline: a short punchy phrase (2-4 words) that expresses this benefit: \"{main_benefit}\". "
@@ -856,7 +888,12 @@ def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool)
     page_index = (variant - 1) // max(1, variants)
     if page_index == 0 and content_type in ("card", "copyStyle"):
         # Muqova: to'plamning dizayn tizimini belgilaydi — keyingi sahifalar shundan nusxa oladi.
-        extra = (
+        cover_text = page_text(settings, 0)
+        cover_override = (
+            "\n\n" + exact_text_block(cover_text, language_hint(settings))
+            + "\nThese exact texts override any other text instructions above."
+        ) if cover_text else ""
+        extra = cover_override + (
             f"\n\nThis is PAGE 1 (the cover) of a {pages}-page set. It defines the set's design system "
             f"(palette, typography, brand tag, icon style) that later pages will reuse, so keep it clean and "
             f"systematic. {page_indicator_rule(0, pages)}"

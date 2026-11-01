@@ -2457,3 +2457,53 @@ class PageSetTests(TestCase):
         self.assertEqual(set_page_cover_url(job, 4, previous), "/media/b.png")
         job.settings = {"contentType": "card", "pages": 1}
         self.assertIsNone(set_page_cover_url(job, 2, previous))
+
+
+class PageCopyTests(TestCase):
+    """Har sahifaning matni har xil: bir xil plashkalar takrorlanmaydi."""
+
+    brief = {"title": "Futbol to'pi", "subtitle": "UEFA EURO 2024 rasmiy futbol to'pi", "category": "Sport",
+             "benefits": ["Yuqori sifatli material", "Ajoyib uslub va dizayn", "Sifatli o'yin tajribasi"]}
+
+    def test_fallback_distributes_benefits_without_repeats(self):
+        from .page_copy import fallback_page_copy, plan_is_repetitive
+
+        plan = fallback_page_copy(self.brief, {"language": "uz"}, 2)
+        self.assertEqual([p["type"] for p in plan], ["cover", "lifestyle"])
+        self.assertNotEqual(plan[0]["headline"], plan[1]["headline"])
+        self.assertFalse(plan_is_repetitive(plan))
+
+    def test_old_identical_plan_is_detected(self):
+        from .page_copy import plan_is_repetitive
+
+        same = {"headline": "FUTBOL TO'PI", "subtitle": "x", "lines": ["a", "b"]}
+        self.assertTrue(plan_is_repetitive([dict(same), dict(same)]))
+
+    def test_ai_copy_parsed_and_deduped(self):
+        import json
+        from unittest import mock
+
+        from .page_copy import ai_page_copy
+
+        payload = {"pages": [
+            {"headline": "Futbol to'pi", "subtitle": "Rasmiy EURO 2024", "lines": ["A", "B", "C"]},
+            {"headline": "Maydonda ishonch", "subtitle": "Har o'yinda", "lines": ["C", "Yomg'irda ham"]},
+        ]}
+        fake = mock.Mock(ok=True)
+        fake.json.return_value = {"choices": [{"message": {"content": json.dumps(payload)}}]}
+        with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "k"}), mock.patch("generation.page_copy.requests.post", return_value=fake):
+            plan = ai_page_copy(self.brief, {"language": "uz"}, 2)
+        self.assertEqual(plan[1]["lines"], ["Yomg'irda ham"])  # "C" 1-sahifada bor edi
+
+    def test_prompts_use_exact_page_text(self):
+        from .prompts import build_prompt
+
+        settings = {"contentType": "card", "pages": 2, "variants": 1, "language": "uz", "plan": [
+            {"headline": "FUTBOL TO'PI", "subtitle": "Rasmiy EURO 2024", "lines": ["Mustahkam", "Yorqin dizayn"]},
+            {"headline": "Maydonda ishonch", "subtitle": "Har qanday o'yinda", "lines": ["Yomg'irda ham"]},
+        ]}
+        cover = build_prompt(self.brief, settings, 1, False)
+        page2 = build_prompt(self.brief, settings, 2, False)
+        self.assertIn("Headline: FUTBOL TO'PI", cover)
+        self.assertIn("Headline: Maydonda ishonch", page2)
+        self.assertNotIn("Mustahkam", page2)

@@ -51,3 +51,10 @@ class LayerExtractThrottle(UserRateThrottle):
     """Magic Layers: bosilgan nuqtadan element ajratish (SAM2 + eraser — pullik)."""
 
     scope = "layer_extract"
+
+
+class PlanThrottle(UserRateThrottle):
+    """Sahifalar matn rejasi: kirgan foydalanuvchida OpenAI chaqiriladi."""
+
+    scope = "plan"
+

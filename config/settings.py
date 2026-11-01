@@ -182,6 +182,8 @@ REST_FRAMEWORK = {
         "audit": os.environ.get("THROTTLE_AUDIT", "20/hour"),
         "analyze": os.environ.get("THROTTLE_ANALYZE", "60/hour"),
         "layer_extract": os.environ.get("THROTTLE_LAYER_EXTRACT", "30/min"),
+        # Matn rejasi (AI kopirayter, kirgan foydalanuvchilar uchun).
+        "plan": os.environ.get("THROTTLE_PLAN", "60/hour"),
     },
 }
 
