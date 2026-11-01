@@ -2414,3 +2414,46 @@ class AdminLoginGuardTests(TestCase):
         ok = self.client.post(url, {"username": "g1@example.com", "password": "x-strong-pass-123"}, REMOTE_ADDR="8.8.8.8")
         self.assertEqual(ok.status_code, 302)
         cache.clear()
+
+
+class PageSetTests(TestCase):
+    """Ko'p sahifali to'plam: 2+ sahifa muqova emas, o'z vazifasi bilan va 1-sahifa uslubida."""
+
+    brief = {"title": "IP kamera", "subtitle": "", "category": "Elektronika",
+             "benefits": ["360° aylanish", "Tungi ko'rish", "Telefondan boshqarish"]}
+
+    def test_pages_get_different_roles(self):
+        from .prompts import build_prompt, page_role
+
+        settings = {"contentType": "card", "pages": 4, "variants": 1, "language": "uz"}
+        cover = build_prompt(self.brief, settings, 1, False)
+        page2 = build_prompt(self.brief, settings, 2, False)
+        page3 = build_prompt(self.brief, settings, 3, False)
+        page4 = build_prompt(self.brief, settings, 4, False)
+        self.assertIn("PAGE 1 (the cover)", cover)
+        self.assertIn("IMAGE 1 is PAGE 1 of the same set", page2)
+        self.assertIn("IN-CONTEXT HERO", page2)
+        self.assertIn("USE-CASE GRID", page3)
+        self.assertIn("FEATURES PAGE", page4)
+        self.assertIn("Do NOT use the product name", page2)
+        self.assertEqual([page_role(3, i) for i in range(3)], ["cover", "lifestyle", "features"])
+
+    def test_variants_and_pages_index_mapping(self):
+        from .prompts import build_prompt
+
+        settings = {"contentType": "card", "pages": 2, "variants": 2}
+        # 1,2 — muqova (2 variant); 3,4 — 2-sahifa
+        self.assertIn("PAGE 1 (the cover)", build_prompt(self.brief, settings, 2, False))
+        self.assertIn("IN-CONTEXT HERO", build_prompt(self.brief, settings, 3, False))
+
+    def test_cover_url_for_later_pages(self):
+        from .providers import set_page_cover_url
+
+        job = GenerationJob(content_type="card", settings={"contentType": "card", "pages": 3, "variants": 2})
+        previous = [{"url": "/media/a.png"}, {"url": "/media/b.png"}]
+        self.assertIsNone(set_page_cover_url(job, 1, previous))
+        self.assertIsNone(set_page_cover_url(job, 2, previous))
+        self.assertEqual(set_page_cover_url(job, 3, previous), "/media/a.png")
+        self.assertEqual(set_page_cover_url(job, 4, previous), "/media/b.png")
+        job.settings = {"contentType": "card", "pages": 1}
+        self.assertIsNone(set_page_cover_url(job, 2, previous))

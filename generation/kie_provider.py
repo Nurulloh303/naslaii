@@ -25,7 +25,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 
 from .prompts import build_prompt, compact_prompt, safe_minimal_prompt
-from .providers import GenerationError, _decode_data_url, _store
+from .providers import GenerationError, _decode_data_url, _store, read_stored_image, set_page_cover_url
 from .translate import translate_brief
 
 logger = logging.getLogger(__name__)
@@ -185,7 +185,7 @@ class KieGenerationProvider:
         if not self.api_key:
             raise GenerationError("Kie kaliti serverda sozlanmagan", status=503, code="KIE_NOT_CONFIGURED")
 
-    def generate(self, job, index: int) -> dict:
+    def generate(self, job, index: int, previous=None) -> dict:
         settings = job.settings or {}
         brief = {"title": job.title, "subtitle": job.subtitle, "category": job.category, "benefits": job.benefits}
         # Tarjima alohida — matnli chaqiruv, rasm provayderidan qat'i nazar
@@ -200,6 +200,17 @@ class KieGenerationProvider:
         if has_reference:
             reference_url = _upload_input_image(reference_data_url, job.user_id, "reference", self.api_key)
             input_urls = [reference_url, product_url]
+
+        # To'plamning 2+ sahifasi: IMAGE 1 — shu to'plamning 1-sahifasi (uslub manbai).
+        cover_url = set_page_cover_url(job, index, previous)
+        if cover_url:
+            try:
+                cover_bytes, cover_mime, cover_ext = read_stored_image(cover_url)
+                cover_public = _upload_to_kie(cover_bytes, f"set-page-1.{cover_ext}", cover_mime, self.api_key)
+                if cover_public:
+                    input_urls = [cover_public, product_url]
+            except (OSError, ValueError) as error:
+                logger.warning("1-sahifani o'qib bo'lmadi, sahifa uslub manbaisiz chiziladi: %s", error)
 
         # Fallback zanjiri: reference bilan primary → reference bilan compact
         # → reference siz safe-minimal (OpenAI provayderidagi kabi).

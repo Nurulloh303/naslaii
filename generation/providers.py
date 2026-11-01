@@ -76,12 +76,50 @@ def _store(image_bytes: bytes, user_id: int, extension: str = "jpg") -> dict:
     }
 
 
+# ------------------------------------------------------- ko'p sahifali to'plam
+
+def set_page_cover_url(job, index: int, previous=None) -> str | None:
+    """To'plamning 2-sahifasidan boshlab — shu variantning 1-sahifasi (uslub manbai).
+
+    ``previous`` — shu ishga tushishda tayyor bo'lgan natijalar (tasks.run_job).
+    Bitta slaydni qayta chizishda ``job.results`` dan olinadi.
+    """
+    settings = job.settings or {}
+    pages = int(settings.get("pages") or 1)
+    if pages <= 1 or settings.get("contentType", "card") not in ("card", "copyStyle"):
+        return None
+    if settings.get("textMode") == "own":
+        return None
+    variants = max(1, int(settings.get("variants") or 1))
+    page_index = (index - 1) // variants
+    if page_index <= 0:
+        return None
+    results = previous if previous is not None else (job.results or [])
+    cover_index = (index - 1) % variants
+    if cover_index >= len(results):
+        return None
+    return str((results[cover_index] or {}).get("url") or "") or None
+
+
+def read_stored_image(url: str) -> tuple[bytes, str, str]:
+    """Saqlangan natija rasmini (/media/... yoki to'liq URL) baytlarga o'qiydi."""
+    path = str(url or "")
+    if "/media/" in path:
+        path = path.split("/media/", 1)[1]
+    path = path.lstrip("/")
+    with default_storage.open(path, "rb") as handle:
+        raw = handle.read()
+    extension = path.rsplit(".", 1)[-1].lower() if "." in path else "png"
+    mime = "image/png" if extension == "png" else "image/jpeg"
+    return raw, mime, ("jpg" if extension == "jpeg" else extension)
+
+
 class MockGenerationProvider:
     """Заглушка: рисует однотонную карточку с названием товара."""
 
     name = "mock"
 
-    def generate(self, job, index: int) -> dict:
+    def generate(self, job, index: int, previous=None) -> dict:
         image = Image.new("RGB", (TARGET_WIDTH, TARGET_HEIGHT), (18, 20, 24))
         draw = ImageDraw.Draw(image)
         draw.rectangle([64, 64, TARGET_WIDTH - 64, TARGET_HEIGHT - 64], outline=(255, 92, 46), width=6)
@@ -165,7 +203,7 @@ class OpenAiGenerationProvider:
 
     # --- цепочка откатов ---------------------------------------------------
 
-    def generate(self, job, index: int) -> dict:
+    def generate(self, job, index: int, previous=None) -> dict:
         settings = job.settings or {}
         brief = {"title": job.title, "subtitle": job.subtitle, "category": job.category, "benefits": job.benefits}
         brief = translate_brief(brief, settings.get("language"), self.api_key)
@@ -179,6 +217,16 @@ class OpenAiGenerationProvider:
         if has_reference:
             ref_bytes, ref_mime, ref_ext = _decode_data_url(reference_url)
             files = [(ref_bytes, ref_mime, f"design-reference.{ref_ext}"), product]
+
+        # To'plamning 2+ sahifasi: IMAGE 1 — shu to'plamning 1-sahifasi (u allaqachon
+        # foydalanuvchi referensi uslubida), IMAGE 2 — mahsulot.
+        cover_url = set_page_cover_url(job, index, previous)
+        if cover_url:
+            try:
+                cover_bytes, cover_mime, cover_ext = read_stored_image(cover_url)
+                files = [(cover_bytes, cover_mime, f"set-page-1.{cover_ext}"), product]
+            except (OSError, ValueError) as error:
+                logger.warning("1-sahifani o'qib bo'lmadi, sahifa uslub manbaisiz chiziladi: %s", error)
 
         attempts = [
             ("primary", build_prompt(brief, settings, index, has_reference), files, has_reference),

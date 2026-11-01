@@ -50,7 +50,7 @@ def run_job(job: GenerationJob) -> None:
                 job.results = results
                 job.save(update_fields=["results", "updated_at"])
                 return
-            results.append(provider.generate(job, index + 1))
+            results.append(provider.generate(job, index + 1, previous=results))
             job.progress = min(96, 32 + round((index + 1) / total * 60))
             job.message = f"{index + 1}/{total} tayyorlanmoqda"
             job.save(update_fields=["progress", "message", "updated_at"])

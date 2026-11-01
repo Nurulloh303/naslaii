@@ -708,6 +708,118 @@ def style_preset_rule(settings: dict) -> str:
     )
 
 
+
+# ================================================================ Ko'p sahifali to'plam
+# Ilgari 2-, 3-sahifalar ham "asosiy kartochka" ko'rsatmasi bilan yaratilib,
+# oxiriga faqat "boshqacha bo'lsin" qatori qo'shilardi — model har sahifani
+# yana muqova qilib chizardi. Endi har bir sahifaning o'z vazifasi bor
+# (marketplace to'plamlari kabi: muqova → hayotiy sahna → stsenariylar →
+# xususiyatlar → detallar), va 2-sahifadan boshlab tayyor 1-sahifa uslub
+# manbai sifatida beriladi — to'plam bitta dizayn tizimida chiqadi.
+
+PAGE_ROLES = {
+    "lifestyle": (
+        "IN-CONTEXT HERO. Show the product in a realistic usage scene (a real room / place where it is "
+        "used), as a large photo panel occupying roughly 55-65% of the card, with rounded corners. "
+        "Above or beside it: one short benefit headline. Inside or under the photo panel: one dark or accent "
+        "pill with one concrete fact (a number if available). Two short feature lines with small icons at the bottom."
+    ),
+    "scenarios": (
+        "USE-CASE GRID. A 2x2 grid of photo tiles (thin gutters, rounded corners). Each tile shows the product "
+        "in a DIFFERENT real situation / for a different user or need, with a 2-4 word caption in the tile corner. "
+        "One bold headline overlapping the grid centre on a solid plate or across the middle gutter."
+    ),
+    "features": (
+        "FEATURES PAGE. The product large on one side (different angle/crop than page 1). On the other side a "
+        "vertical list of 3-4 features, each with a simple line icon and a short 2-6 word label. One accent "
+        "panel with the strongest feature in bigger text. Headline at the top."
+    ),
+    "details": (
+        "DETAILS / CLOSE-UP PAGE. Macro close-up of the most important part of the product (material, "
+        "button, lens, texture), plus 2-3 circular or rounded zoom callouts with thin leader lines to "
+        "smaller labels. Headline at the top."
+    ),
+    "trust": (
+        "TRUST / KIT PAGE. The product with what comes in the box or how it connects (e.g. a phone with the "
+        "app, accessories), a 'quality / guarantee / brand' statement on a dark pill at the bottom, and two "
+        "short facts with icons. Headline at the top."
+    ),
+}
+
+# Sahifalar soniga qarab rollar tartibi (1-sahifa doim muqova).
+PAGE_ROLE_ORDER = {
+    2: ["lifestyle"],
+    3: ["lifestyle", "features"],
+    4: ["lifestyle", "scenarios", "features"],
+    5: ["lifestyle", "scenarios", "features", "details"],
+}
+
+
+def page_role(pages: int, page_index: int) -> str:
+    """page_index 0 — muqova; 1.. — PAGE_ROLES kaliti."""
+    if page_index <= 0:
+        return "cover"
+    order = PAGE_ROLE_ORDER.get(max(2, min(5, pages)), PAGE_ROLE_ORDER[5])
+    return order[(page_index - 1) % len(order)]
+
+
+def page_indicator_rule(page_index: int, pages: int) -> str:
+    return (
+        f"Small page indicator in a fixed corner (bottom-right), e.g. \"0{page_index + 1} / 0{pages}\", "
+        "same position, size and style on every page of the set."
+    )
+
+
+def set_page_prompt(brief: dict, settings: dict, variant: int, page_index: int, pages: int) -> str:
+    """2-sahifa va undan keyingilar uchun TO'LIQ ko'rsatma (muqova ko'rsatmasiga qo'shimcha emas).
+
+    IMAGE 1 — shu to'plamning 1-sahifasi (yoki foydalanuvchi referensi): uslub manbai.
+    IMAGE 2 — mahsulot fotosi.
+    """
+    platform = marketplace_name(settings)
+    hint = language_hint(settings)
+    benefits = [b for b in (brief.get("benefits") or []) if b]
+    role = page_role(pages, page_index)
+    custom_focus = ""
+    focus_list = settings.get("pageFocus") or []
+    if isinstance(focus_list, (list, tuple)) and page_index < len(focus_list):
+        custom_focus = str(focus_list[page_index] or "").strip()
+
+    if benefits:
+        main_benefit = benefits[(page_index - 1) % len(benefits)]
+        headline = (
+            f"Headline: a short punchy phrase (2-4 words) that expresses this benefit: \"{main_benefit}\". "
+            f"Do NOT use the product name or category as the headline — page 1 already did that."
+        )
+        facts = f"Facts you may use on this page (do not invent others): {'; '.join(benefits[:4])}."
+    else:
+        headline = (
+            "Headline: a short punchy phrase (2-4 words) about the main benefit visible on the product. "
+            "Do NOT repeat the product name as the headline."
+        )
+        facts = "No verified facts were supplied: do not invent numbers or specifications."
+
+    focus_line = f"\nThe seller asked this page to focus on: {custom_focus}" if custom_focus else ""
+
+    return f"""Create page {page_index + 1} of a {pages}-page {platform} marketplace image set (vertical 1080x1440).
+
+IMAGE 1 is PAGE 1 of the same set (the style source). IMAGE 2 is the product photo.
+CONSISTENCY — copy from IMAGE 1 exactly: colour palette, background treatment, typography (font style, weights, letter case), accent colour, icon style, corner radii, small brand tag position and style, decorative lines and spacing system. A buyer must see that both pages belong to one set.
+DIFFERENCE — this page must NOT look like page 1: a different layout and a different job, described below. Do NOT place the product big in the centre the way page 1 does; do NOT reuse page 1's headline.
+
+THIS PAGE'S JOB:
+{PAGE_ROLES[role]}{focus_line}
+
+Product: use ONLY the product from IMAGE 2. Keep its exact shape, colour, proportions, materials and visible brand details; it may appear at a different angle, scale or in a scene, but it must be the same item.
+{headline}
+{facts}
+Write every visible word in {hint}. {translate_note(settings)}
+Keep text short and large enough to read on a phone; at most 5 text blocks on the page.
+{page_indicator_rule(page_index, pages)}
+{NO_MARKETPLACE_BRANDING}
+Photorealistic, premium commercial quality. Variant {variant}."""
+
+
 def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
     """Главная точка входа: какой промпт нужен для этой задачи."""
     content_type = settings.get("contentType", "card")
@@ -715,6 +827,12 @@ def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool)
     # чтобы повторить чужую типографику.
     if settings.get("textMode") == "own" and not has_reference and content_type != "fashion":
         return clean_background_prompt(brief, settings, variant) + style_preset_rule(settings)
+    pages_total = int(settings.get("pages") or 1)
+    if pages_total > 1 and content_type in ("card", "copyStyle"):
+        set_page_index = (variant - 1) // max(1, int(settings.get("variants") or 1))
+        if set_page_index > 0:
+            return set_page_prompt(brief, settings, variant, set_page_index, pages_total) + rerender_rules(settings, variant)
+
     if has_reference and content_type in ("card", "copyStyle"):
         prompt = style_copy_prompt(brief, settings, variant)
     elif content_type == "fashion":
@@ -736,22 +854,15 @@ def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool)
 
     variants = int(settings.get("variants") or 1)
     page_index = (variant - 1) // max(1, variants)
-    focus = (settings.get("pageFocus") or [""] * 5)[page_index] if page_index < 5 else ""
-
-    # С образцом стиля НЕЛЬЗЯ просить менять композицию между страницами:
-    # это прямо противоречит указанию «повтори образец» и стиль разваливается.
-    if has_reference:
+    if page_index == 0 and content_type in ("card", "copyStyle"):
+        # Muqova: to'plamning dizayn tizimini belgilaydi — keyingi sahifalar shundan nusxa oladi.
         extra = (
-            f"\n\nThis is page {page_index + 1} of {pages}. Keep EXACTLY the same reference style, layout "
-            f"system, colors and typography on every page."
+            f"\n\nThis is PAGE 1 (the cover) of a {pages}-page set. It defines the set's design system "
+            f"(palette, typography, brand tag, icon style) that later pages will reuse, so keep it clean and "
+            f"systematic. {page_indicator_rule(0, pages)}"
         )
-        if focus:
-            extra += f" Change only the emphasised benefit: {focus}"
     else:
-        # Без явного акцента "поменяй композицию" — слишком общая просьба,
-        # модель часто просто повторяет тот же кадр близко к оригиналу.
-        # Даём конкретный фокус по кругу из той же системы типов, что и в
-        # пакете маркетплейса — вторая страница гарантированно про другое.
+        focus = (settings.get("pageFocus") or [""] * 5)[page_index] if page_index < 5 else ""
         auto_focus = slide_focus(SLIDE_TYPE_IDS[page_index % len(SLIDE_TYPE_IDS)])
         extra = (
             f"\n\nThis is page {page_index + 1} of {pages} in a set that must share ONE consistent visual style. "
