@@ -24,6 +24,11 @@ from .providers import get_provider
 logger = logging.getLogger(__name__)
 
 
+def _was_cancelled(job: GenerationJob) -> bool:
+    """Bazadan o'qiymiz: bekor qilish flagini boshqa so'rov qo'yadi."""
+    return GenerationJob.objects.filter(pk=job.pk, cancelled=True).exists()
+
+
 def _ensure_page_copy(job: GenerationJob) -> None:
     """Ko'p sahifali to'plamda har sahifaning matni har xil bo'lishi kerak.
 
@@ -71,20 +76,25 @@ def run_job(job: GenerationJob) -> None:
             # другой запрос, значение в памяти о нём не знает. Запрос, уже
             # ушедший в OpenAI, прервать нельзя — за него мы платим в любом
             # случае.
-            if GenerationJob.objects.filter(pk=job.pk, cancelled=True).exists():
-                job.results = results
-                job.save(update_fields=["results", "updated_at"])
+            if _was_cancelled(job):
                 return
             results.append(provider.generate(job, index + 1, previous=results))
+            # Rasm chizilayotganda bekor qilingan bo'lishi mumkin. Unda bekor qilish
+            # so'rovi allaqachon holat, xabar va tokenlarni hal qilgan — ularni
+            # eski (xotiradagi) qiymatlar bilan ustidan yozmaymiz.
+            if _was_cancelled(job):
+                return
             job.progress = min(96, 32 + round((index + 1) / total * 60))
             job.message = f"{index + 1}/{total} tayyorlanmoqda"
             job.save(update_fields=["progress", "message", "updated_at"])
 
+        if _was_cancelled(job):
+            return
         job.results = results
         job.status = "success"
         job.progress = 100
         job.message = "Tayyor"
-        job.save()
+        job.save(update_fields=["results", "status", "progress", "message", "updated_at"])
         return
     except Exception as error:  # включая GenerationError
         if GenerationJob.objects.filter(pk=job.pk, cancelled=True).exists():

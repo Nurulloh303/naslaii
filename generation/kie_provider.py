@@ -141,14 +141,32 @@ def _create_task(prompt: str, input_urls: list[str], api_key: str) -> str:
     return task_id
 
 
-def _wait_for_result(task_id: str, api_key: str) -> str:
-    """Natija tayyor bo'lguncha kutadi, tayyor bo'lgach rasm URL'ini qaytaradi."""
+class GenerationCancelled(Exception):
+    """Foydalanuvchi generatsiyani bekor qildi — Kie natijasini kutishni to'xtatamiz."""
+
+
+def _is_cancelled(job_id) -> bool:
+    if not job_id:
+        return False
+    from .models import GenerationJob
+
+    return GenerationJob.objects.filter(pk=job_id, cancelled=True).exists()
+
+
+def _wait_for_result(task_id: str, api_key: str, job_id=None) -> str:
+    """Natija tayyor bo'lguncha kutadi, tayyor bo'lgach rasm URL'ini qaytaradi.
+
+    Har so'rovda bekor qilinganini tekshiradi: foydalanuvchi "Bekor qilish"ni
+    bossa, 2-3 daqiqa kutib o'tirmaymiz.
+    """
     import json
 
     deadline = time.monotonic() + KIE_TASK_TIMEOUT
     headers = {"Authorization": f"Bearer {api_key}"}
 
     while time.monotonic() < deadline:
+        if _is_cancelled(job_id):
+            raise GenerationCancelled(task_id)
         response = requests.get(
             KIE_TASK_INFO_URL, params={"taskId": task_id}, headers=headers, timeout=KIE_REQUEST_TIMEOUT,
         )
@@ -222,9 +240,11 @@ class KieGenerationProvider:
 
         last_error: GenerationError | None = None
         for tier, prompt, tier_urls, reference_used in attempts:
+            if _is_cancelled(job.pk):
+                raise GenerationCancelled(f"job={job.pk}")
             try:
                 task_id = _create_task(prompt, tier_urls, self.api_key)
-                result_url = _wait_for_result(task_id, self.api_key)
+                result_url = _wait_for_result(task_id, self.api_key, job_id=job.pk)
                 image_response = requests.get(result_url, timeout=KIE_REQUEST_TIMEOUT)
                 image_response.raise_for_status()
                 from .imaging import normalize_generated_image

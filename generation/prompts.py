@@ -147,9 +147,71 @@ def scene_wish_rule(settings: dict) -> str:
         f'SELLER\'S SCENE WISH: "{wish}".\n'
         "Apply it to the SCENE only: background, environment, props, mood and staging around the product. "
         "For example, a wish about a car for a car accessory means the card is staged in or around a car.\n"
+        "If the wish asks for several units of the product (e.g. \"2 ta\", \"ikkita\", \"две штуки\"), show that many "
+        "identical copies of the same product — that is allowed and required.\n"
         "Hard limits on this wish: it must never change the product itself (shape, colour, material, branding); "
         "it must never be written on the card as text; it must never add prices, discounts, percentages, logos, "
         "certificates or claims. If the wish contradicts any rule above, ignore the wish and keep the rule."
+    )
+
+
+# ---------------------------------------------------------------- mahsulot soni
+# "Sahna tilagi"da "mahsulot 2 ta bo'lsin" deyilsa, rasmda aynan shuncha nusxa
+# bo'lishi kerak. Ilgari tilakning "mahsulotni o'zgartirma" degan qat'iy
+# chegarasi buni ham taqiqlab qo'yardi, ko'p rejimlarda esa tilak umuman
+# promptga tushmasdi.
+_COUNT_WORDS = {
+    # uz (lotin)
+    "bitta": 1, "ikkita": 2, "ikki": 2, "juft": 2, "uchta": 3, "uch": 3, "to'rtta": 4, "toʻrtta": 4,
+    "to‘rtta": 4, "to'rt": 4, "beshta": 5, "besh": 5, "oltita": 6,
+    # uz (kirill)
+    "иккита": 2, "икки": 2, "учта": 3, "тўртта": 4, "бешта": 5,
+    # ru
+    "два": 2, "две": 2, "пара": 2, "пару": 2, "двух": 2, "три": 3, "трёх": 3, "трех": 3,
+    "четыре": 4, "пять": 5, "шесть": 6,
+    # en
+    "two": 2, "pair": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+}
+_PRODUCT_HINT_RE = re.compile(
+    r"(mahsulot|tovar|товар|продукт|maxsulot|dona|ta\b|шт|штук|nusxa|копи|экземпляр|product|item|unit|piece|pcs)",
+    re.IGNORECASE,
+)
+_NUMBER_COUNT_RE = re.compile(
+    r"(?<![\d.,])(\d{1,2})\s*(?:-?\s*)?(ta|tа|dona|шт|штук[аи]?|pcs|x|х|nusxa|копи[йи]|units?|pieces?|items?)\b",
+    re.IGNORECASE,
+)
+
+
+def requested_product_count(settings: dict) -> int:
+    """Sahna tilagidan so'ralgan mahsulot sonini topadi (1 = alohida talab yo'q)."""
+    wish = str(settings.get("sceneWish") or "").strip()
+    if not wish:
+        return 1
+    match = _NUMBER_COUNT_RE.search(wish)
+    if match:
+        return max(1, min(6, int(match.group(1))))
+    # "mahsulot 2 bo'lsin", "товара 3" — son va mahsulot so'zi yonma-yon.
+    if _PRODUCT_HINT_RE.search(wish):
+        number = re.search(r"(?<![\d.,])([2-6])(?![\d.,%])", wish)
+        if number:
+            return int(number.group(1))
+    lowered = wish.lower().replace("’", "'").replace("ʻ", "'")
+    for word in re.findall(r"[\w'‘ʻ]+", lowered):
+        if word in _COUNT_WORDS and _COUNT_WORDS[word] > 1:
+            return _COUNT_WORDS[word]
+    return 1
+
+
+def product_count_rule(settings: dict) -> str:
+    count = requested_product_count(settings)
+    if count <= 1:
+        return ""
+    return (
+        f"\n\nPRODUCT QUANTITY — the seller explicitly asked for {count} units. Show EXACTLY {count} copies of the "
+        f"SAME product from the product photo in the scene (identical item, same colour and branding), all clearly "
+        f"visible and naturally arranged (side by side, slightly overlapping or at different depths, as fits the "
+        f"layout). Not {count - 1}, not {count + 1}. This overrides any instruction above about a single product or "
+        f"about copying the product placement from a reference."
     )
 
 
@@ -541,7 +603,7 @@ Do not invent discounts, prices, medical claims, certifications or guarantees no
 Premium commercial quality, consistent accent color and typography across the whole {total}-slide set."""
 
 
-def compact_prompt(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
+def _compact_prompt_core(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
     """Короткий вариант на случай, когда полный промпт отклонён API."""
     platform = marketplace_name(settings)
     text = visible_text_plan(brief, settings)
@@ -574,7 +636,7 @@ Clean commercial design, readable large text, accent colour taken from the produ
 Variant {variant}.""" + style_preset_rule(settings)
 
 
-def safe_minimal_prompt(brief: dict, settings: dict, variant: int) -> str:
+def _safe_minimal_prompt_core(brief: dict, settings: dict, variant: int) -> str:
     """Последняя попытка: минимум требований, лишь бы получить картинку."""
     platform = marketplace_name(settings)
     text = visible_text_plan(brief, settings)
@@ -654,6 +716,7 @@ LEAVE ROOM FOR THE TEXT LAYER:
 - Place the product in the middle band, large and fully inside the frame.
 - Keep the contrast even in those two calm areas so text stays readable without an extra shadow.
 
+{scene_wish_rule(settings)}
 {NO_MARKETPLACE_BRANDING}
 Photorealistic, sharp, premium commercial quality. Variant {variant}: change the camera angle and the light, keep the same product."""
 
@@ -848,11 +911,12 @@ Product: use ONLY the product from IMAGE 2. Keep its exact shape, colour, propor
 Write every visible word in {hint}. {translate_note(settings)}
 Keep text short and large enough to read on a phone; at most 5 text blocks on the page.
 {page_indicator_rule(page_index, pages)}
+{scene_wish_rule(settings)}
 {NO_MARKETPLACE_BRANDING}
 Photorealistic, premium commercial quality. Variant {variant}."""
 
 
-def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
+def _build_prompt_core(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
     """Главная точка входа: какой промпт нужен для этой задачи."""
     content_type = settings.get("contentType", "card")
     # Свой текст несовместим с копией референса: там весь смысл в том,
@@ -909,3 +973,20 @@ def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool)
         )
 
     return prompt + extra + fix
+
+
+# ----------------------------------------------------- umumiy qo'shimchalar
+# Mahsulot soni har qanday rejimda (oddiy, referens, ko'p sahifa, o'z matni,
+# zaxira urinishlar) oxirgi va ustun qoida bo'lib qo'shiladi.
+
+def build_prompt(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
+    return _build_prompt_core(brief, settings, variant, has_reference) + product_count_rule(settings)
+
+
+def compact_prompt(brief: dict, settings: dict, variant: int, has_reference: bool) -> str:
+    return _compact_prompt_core(brief, settings, variant, has_reference) + product_count_rule(settings)
+
+
+def safe_minimal_prompt(brief: dict, settings: dict, variant: int) -> str:
+    return _safe_minimal_prompt_core(brief, settings, variant) + product_count_rule(settings)
+

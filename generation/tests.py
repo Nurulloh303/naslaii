@@ -2507,3 +2507,60 @@ class PageCopyTests(TestCase):
         self.assertIn("Headline: FUTBOL TO'PI", cover)
         self.assertIn("Headline: Maydonda ishonch", page2)
         self.assertNotIn("Mustahkam", page2)
+
+
+class CancelDuringRenderTests(TestCase):
+    """Oxirgi rasm chizilayotganda bekor qilinsa — vazifa 'tayyor' bo'lib qaytib qolmasligi kerak."""
+
+    def test_cancel_while_rendering_last_image_is_respected(self):
+        from unittest import mock
+
+        from . import tasks
+
+        user = User.objects.create_user(username="c1", email="c1@example.com", password="x-strong-pass-123", balance=5)
+        job = GenerationJob.objects.create(user=user, content_type="card", status="queued", tokens_charged=1,
+                                           settings={"contentType": "card", "variants": 1, "pages": 1})
+
+        class Provider:
+            def generate(self, job_obj, index, previous=None):
+                # Shu payt foydalanuvchi "Bekor qilish"ni bosdi (cancel_generation view).
+                GenerationJob.objects.filter(pk=job_obj.pk).update(
+                    cancelled=True, refunded=True, status="failed", message="Bekor qilindi")
+                return {"id": "x", "url": "/media/generated/user_1/x.png", "width": 1080, "height": 1440}
+
+        with mock.patch.object(tasks, "get_provider", return_value=Provider()):
+            tasks.run_job(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.message, "Bekor qilindi")
+        self.assertTrue(job.cancelled)
+
+
+class ProductCountTests(TestCase):
+    """Sahna tilagida "2 ta mahsulot" deyilsa — rasmda 2 ta bo'lishi kerak."""
+
+    def test_count_detection(self):
+        from .prompts import requested_product_count as count
+
+        for wish, expected in [
+            ("rasmda mahsulot 2 ta bo'lsin", 2), ("ikkita mahsulot yonma-yon", 2), ("3 dona tursin", 3),
+            ("две штуки на столе", 2), ("товар 3 шт", 3), ("two bottles side by side", 2),
+            ("mashina ichida ko'rsatilsin", 1), ("", 1), ("50% chegirma", 1), ("1080x1440", 1),
+        ]:
+            self.assertEqual(count({"sceneWish": wish}), expected, wish)
+
+    def test_rule_added_in_all_modes(self):
+        from .prompts import build_prompt, compact_prompt, safe_minimal_prompt
+
+        brief = {"title": "Krem", "category": "Go'zallik", "benefits": ["Namlantiradi"]}
+        settings = {"contentType": "card", "sceneWish": "mahsulot 2 ta bo'lsin"}
+        for prompt in (
+            build_prompt(brief, settings, 1, False),
+            build_prompt(brief, {**settings, "designReferenceDataUrl": "x"}, 1, True),
+            build_prompt(brief, {**settings, "pages": 2, "variants": 1}, 2, False),
+            build_prompt(brief, {**settings, "textMode": "own"}, 1, False),
+            compact_prompt(brief, settings, 1, False),
+            safe_minimal_prompt(brief, settings, 1),
+        ):
+            self.assertIn("EXACTLY 2 copies", prompt)
+        self.assertNotIn("PRODUCT QUANTITY", build_prompt(brief, {"contentType": "card"}, 1, False))
