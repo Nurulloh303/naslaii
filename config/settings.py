@@ -124,6 +124,7 @@ INSTALLED_APPS = [
     'promos',
     'adminapi',
     'audit',
+    'uzum',
 ]
 
 MIDDLEWARE = [
@@ -186,6 +187,9 @@ REST_FRAMEWORK = {
         "plan": os.environ.get("THROTTLE_PLAN", "60/hour"),
         # Bepul o'lchamni moslash: bitta foydalanuvchiga soatiga.
         "resize": os.environ.get("THROTTLE_RESIZE", "30/hour"),
+        # Uzum XLSM eksporti (rasm nusxalari + fayl yasash) va prefill (AI tavsif bo'lishi mumkin).
+        "uzum_export": os.environ.get("THROTTLE_UZUM_EXPORT", "30/hour"),
+        "uzum_prefill": os.environ.get("THROTTLE_UZUM_PREFILL", "60/hour"),
     },
 }
 
@@ -410,6 +414,26 @@ STYLE_TEMPLATES_DIR = (
 )
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# -------------------------------------------------------------- Uzum eksport
+
+# Tayyor XLSM fayllar SHAXSIY papkada: ularda narx va sotuvchi ma'lumotlari
+# bor. /media/ ni nginx ochiq beradi — shuning uchun bu papka MEDIA_ROOT
+# ichida bo'lmasligi kerak. Serverda: UZUM_EXPORT_ROOT=/var/lib/naslai/private/uzum
+UZUM_EXPORT_ROOT = os.environ.get("UZUM_EXPORT_ROOT", "").strip() or str(BASE_DIR / "private" / "uzum_exports")
+
+# T ustunida bir nechta rasm havolasi orasidagi ajratgich. Shablon va Uzum
+# yo'riqnomasida aniq yozilmagan; shablonning o'zi bir katakdagi ko'p
+# qiymatlarni ";" bilan birlashtiradi (modFilters.HandleMultipleChoice).
+# Real import sinovi boshqasini ko'rsatsa — shu yerda almashtiring
+# (masalan "," yoki "\n" — yangi qator).
+# IKPU uzunligi: shablon "16 символов" deydi, MXIK klassifikatori esa 17 xonali.
+UZUM_IKPU_LENGTHS = os.environ.get("UZUM_IKPU_LENGTHS", "16,17")
+
+UZUM_PHOTO_SEPARATOR = (
+    os.environ.get("UZUM_PHOTO_SEPARATOR", ";").replace("\\n", "\n").replace("\\t", "\t") or ";"
+)
 
 
 # ------------------------------------------------------------------- логи

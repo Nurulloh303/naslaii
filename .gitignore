@@ -24,3 +24,6 @@ staticfiles/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Uzum XLSM eksportlari (shaxsiy fayllar)
+private/

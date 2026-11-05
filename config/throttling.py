@@ -64,3 +64,15 @@ class ResizeThrottle(UserRateThrottle):
 
     scope = "resize"
 
+
+
+class UzumExportThrottle(UserRateThrottle):
+    """Uzum XLSM eksporti: rasm nusxalari va ~1.5 MB fayl yasaladi."""
+
+    scope = "uzum_export"
+
+
+class UzumPrefillThrottle(UserRateThrottle):
+    """Uzum prefill: tavsif bo'lmasa AI (OpenAI) chaqiriladi."""
+
+    scope = "uzum_prefill"

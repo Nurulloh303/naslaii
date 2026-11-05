@@ -52,6 +52,8 @@ urlpatterns = [
     path("api/style-templates/<str:file_name>", generation_views.style_template_file, name="style-template-file"),
 
     path("api/promo/", include("promos.urls")),
+    # --- Uzum XLSM eksporti ---------------------------------------------
+    path("api/uzum/", include("uzum.urls")),
     path("api/admin/", include("adminapi.urls")),
 
     # --- разбор карточки ----------------------------------------------

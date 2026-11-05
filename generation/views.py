@@ -1006,8 +1006,11 @@ def layer_file(request, path: str):
 # qilib ololmaydi va "Yuklab olish" rasmni yangi oynada ochib qo'yardi.
 # /api/ esa Django orqali o'tadi (corsheaders), ?download=1 bo'lsa
 # Content-Disposition: attachment qo'yamiz — brauzer faylni darhol saqlaydi.
+# Uzum eksport rasmlari: generated/user_<id>/uzum/<uuid32>/<NN>.jpg — Uzum ularni
+# T ustunidagi havoladan anonim (cookie'siz) yuklab oladi.
 GENERATED_FILE_RE = re.compile(
-    r"^generated/user_\d+/(layers/)?[A-Za-z0-9_-]{8,128}\.(png|jpg|jpeg|webp|mp4|webm)$"
+    r"^generated/user_\d+/(?:(?:layers/)?[A-Za-z0-9_-]{8,128}\.(?:png|jpg|jpeg|webp|mp4|webm)"
+    r"|uzum/[0-9a-f]{32}/\d{2}\.jpg)$"
 )
 GENERATED_FILE_TYPES = {**LAYER_FILE_TYPES, "mp4": "video/mp4", "webm": "video/webm"}
 
