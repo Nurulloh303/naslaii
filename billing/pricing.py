@@ -141,6 +141,14 @@ def total_renders(settings: dict) -> int:
     return variants * pages
 
 
+def resize_tokens() -> int:
+    """O'lchamni moslash narxi (default 0 — bepul)."""
+    try:
+        return max(0, int(os.environ.get("RESIZE_TOKENS", "0")))
+    except ValueError:
+        return 0
+
+
 def quote_for(settings: dict) -> dict:
     """Стоимость задачи в токенах плюс расшифровка для интерфейса."""
     content_type = settings.get("contentType", "card")
@@ -155,11 +163,13 @@ def quote_for(settings: dict) -> dict:
         }
 
     if content_type == "resize":
-        # O'lchamni moslash: istalgan rejim (ai/blur/color/crop) — bitta rasm.
+        # O'lchamni moslash hozircha BEPUL (RESIZE_TOKENS=0). Pullik qilish uchun
+        # serverdagi .env da RESIZE_TOKENS=1 qo'yish kifoya.
+        tokens = resize_tokens()
         return {
-            "tokens": TOKENS_PER_IMAGE,
+            "tokens": tokens,
             "label": f"O'lchamni moslash · {FIXED_IMAGE_SIZE['width']}x{FIXED_IMAGE_SIZE['height']}",
-            "breakdown": f"1 rasm = {TOKENS_PER_IMAGE} token.",
+            "breakdown": "Bepul." if tokens == 0 else f"1 rasm = {tokens} token.",
         }
 
     images = total_renders(settings)

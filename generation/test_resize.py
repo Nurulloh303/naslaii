@@ -218,7 +218,15 @@ class DecodeTests(TestCase):
 
 
 class ResizeApiTests(TestCase):
+    """Pullik rejim (RESIZE_TOKENS=1) — token yechish/qaytarish yo'li ishlashini tekshiradi."""
+
     def setUp(self):
+        import os
+        from unittest import mock
+
+        self._env = mock.patch.dict(os.environ, {"RESIZE_TOKENS": "1"})
+        self._env.start()
+        self.addCleanup(self._env.stop)
         cache.clear()
         self._media = tempfile.mkdtemp()
         self._override = override_settings(MEDIA_ROOT=self._media)
@@ -402,3 +410,40 @@ class ResizeApiTests(TestCase):
         self.assertIn("O&#x27;lcham moslash", html)
         self.assertIn("/media/generated/user_", html)
         self.assertIn("src_", html)
+
+
+class ResizeFreeTests(ResizeApiTests):
+    """Default: o'lchamni moslash bepul — balans o'zgarmaydi, 0 token bo'lsa ham ishlaydi."""
+
+    def setUp(self):
+        super().setUp()
+        self._env.stop()
+        import os
+        from unittest import mock
+
+        self._env = mock.patch.dict(os.environ, {"RESIZE_TOKENS": "0"})
+        self._env.start()
+
+    # Pullik rejim testlari bu klassda qayta ishlamasin.
+    test_blur_job_success_payload_and_one_token = None
+    test_every_mode_through_api = None
+    test_failure_refunds_token = None
+    test_idempotency_key = None
+    test_queued_and_cancel_refunds = None
+    test_quote = None
+    test_insufficient_tokens = None
+
+    def test_free_with_zero_balance(self):
+        self.user.balance = 0
+        self.user.save(update_fields=["balance"])
+        response = self.client.post("/api/resize", {"image": data_url(make_image((800, 800))), "mode": "blur"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.balance, 0)
+        job = GenerationJob.objects.get(pk=response.data["job"]["id"])
+        self.assertEqual(job.tokens_charged, 0)
+
+    def test_quote_is_free(self):
+        response = self.client.post("/api/quote", {"settings": {"contentType": "resize"}}, format="json")
+        self.assertEqual(response.json()["tokens"], 0)
+

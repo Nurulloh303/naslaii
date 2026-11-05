@@ -17,7 +17,7 @@ import logging
 
 from billing.pricing import TOKENS_PER_IMAGE, quote_for
 from billing.services import InsufficientBalance, debit, key_debit, refund, refund_job
-from config.throttling import AnalyzeThrottle, GenerationThrottle, LayerExtractThrottle, PlanThrottle
+from config.throttling import AnalyzeThrottle, GenerationThrottle, LayerExtractThrottle, PlanThrottle, ResizeThrottle
 from accounts.models import ApiKey
 
 from .analyze import analyze_image
@@ -240,7 +240,7 @@ def _unit_float(value, default: float = 0.5):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-@throttle_classes([GenerationThrottle])
+@throttle_classes([GenerationThrottle, ResizeThrottle])
 def create_resize(request):
     """O'lchamni moslash: bitta rasm → 1080×1440 (Uzum, 3:4). 1 token, rejimdan qat'i nazar.
 
@@ -291,7 +291,10 @@ def create_resize(request):
     tokens_needed = quote_for({"contentType": "resize"})["tokens"]
     label = f"O'lchamni moslash · {mode}"
     api_key = getattr(request, "api_key", None)
-    if isinstance(api_key, ApiKey):
+    if tokens_needed == 0:
+        # Bepul rejim: hech narsa yechilmaydi, tarixga ham yozilmaydi.
+        user = request.user
+    elif isinstance(api_key, ApiKey):
         try:
             key_debit(api_key, tokens_needed, label)
         except InsufficientBalance as exc:
@@ -308,7 +311,9 @@ def create_resize(request):
         source_path = store_source(raw, image, user.pk)
     except Exception:  # noqa: BLE001 — saqlanmasa token qaytadi
         logger.exception("Resize: asl rasmni saqlab bo'lmadi")
-        if isinstance(api_key, ApiKey):
+        if tokens_needed == 0:
+            pass
+        elif isinstance(api_key, ApiKey):
             from billing.services import key_credit
 
             key_credit(api_key, tokens_needed, f"Qaytarish · {label}")

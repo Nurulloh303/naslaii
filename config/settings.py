@@ -184,6 +184,8 @@ REST_FRAMEWORK = {
         "layer_extract": os.environ.get("THROTTLE_LAYER_EXTRACT", "30/min"),
         # Matn rejasi (AI kopirayter, kirgan foydalanuvchilar uchun).
         "plan": os.environ.get("THROTTLE_PLAN", "60/hour"),
+        # Bepul o'lchamni moslash: bitta foydalanuvchiga soatiga.
+        "resize": os.environ.get("THROTTLE_RESIZE", "30/hour"),
     },
 }
 

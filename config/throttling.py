@@ -58,3 +58,9 @@ class PlanThrottle(UserRateThrottle):
 
     scope = "plan"
 
+
+class ResizeThrottle(UserRateThrottle):
+    """O'lchamni moslash bepul — AI kengaytirish fal.ai'da pullik, shuning uchun soatlik chegara."""
+
+    scope = "resize"
+
