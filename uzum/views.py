@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view, throttle_classes
 from rest_framework.response import Response
 
-from config.throttling import UzumExportThrottle, UzumPrefillThrottle
+from config.throttling import UzumExportThrottle, UzumIkpuThrottle, UzumPrefillThrottle
 from generation.models import GenerationJob
 
 from . import services
@@ -27,7 +29,21 @@ def _category_brief(cat: dict) -> dict:
 @api_view(["GET"])
 def categories(request):
     query = str(request.query_params.get("q") or "")[:100]
-    found = get_catalog().search_categories(query, MAX_RESULTS)
+    catalog = get_catalog()
+    found = catalog.search_categories(query, MAX_RESULTS)
+    if not found and len(query.strip()) >= 3 and not query.strip().isdigit():
+        # Lug'atda yo'q so'z: AI ruschaga o'giradi, natija keshlanadi.
+        from django.core.cache import cache
+
+        from .search_text import ai_translate_query
+
+        key = "uzum-cat-tr:" + hashlib.sha1(query.strip().lower().encode()).hexdigest()
+        translated = cache.get(key)
+        if translated is None:
+            translated = ai_translate_query(query.strip())
+            cache.set(key, translated, 60 * 60 * 24 * 30)
+        if translated:
+            found = catalog.search_categories(query, MAX_RESULTS, extra=translated)
     return Response({"categories": [_category_brief(c) for c in found]})
 
 
@@ -134,3 +150,32 @@ def export_download(request, pk: int):
     response["Cache-Control"] = "private, no-store"
     response["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@api_view(["GET"])
+@throttle_classes([UzumIkpuThrottle])
+def ikpu(request):
+    """IKPU variantlari. ``q`` — erkin qidiruv; yo'q bo'lsa nom+kategoriya bo'yicha AI tavsiya.
+
+    ``code`` — tanlangan/yozilgan kodni tekshirish (nomini qaytaradi).
+    Kod hech qachon avtomatik qo'yilmaydi: sotuvchi ro'yxatdan o'zi tanlaydi.
+    """
+    from . import ikpu as ikpu_search
+
+    params = request.query_params
+    if not ikpu_search.is_loaded():
+        return Response({"ready": False, "results": []})
+    code = str(params.get("code") or "").strip()
+    if code:
+        found = ikpu_search.by_code(code)
+        return Response({"ready": True, "results": [found] if found else []})
+    query = str(params.get("q") or "").strip()[:120]
+    if query:
+        results = ikpu_search.by_barcode(query) if query.isdigit() and len(query) >= 8 else []
+        return Response({"ready": True, "results": results or ikpu_search.search(query, 20)})
+    title = str(params.get("title") or "").strip()[:200]
+    category = str(params.get("category") or "").strip()[:500]
+    barcode = str(params.get("barcode") or "").strip()[:40]
+    if not (title or category or barcode):
+        return Response({"ready": True, "results": []})
+    return Response({"ready": True, "results": ikpu_search.suggest(title, category, barcode, limit=6)})

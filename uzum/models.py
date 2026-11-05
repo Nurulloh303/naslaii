@@ -55,3 +55,26 @@ class UzumExport(models.Model):
     @property
     def file_name(self) -> str:
         return f"naslai-uzum-{self.pk}.xlsm"
+
+
+class IkpuCode(models.Model):
+    """Soliq qo'mitasining MXIK (IKPU) klassifikatori — tasnif.soliq.uz Excel eksportidan.
+
+    ``manage.py uzum_import_ikpu`` bilan to'liq almashtiriladi. ``search`` —
+    ruscha va o'zbekcha nomlar + yo'l, kichik harfda (qidiruv uchun).
+    """
+
+    code = models.CharField(max_length=20, unique=True)
+    name_ru = models.CharField(max_length=1000, blank=True, default="")
+    name_uz = models.CharField(max_length=1000, blank=True, default="")
+    path_ru = models.CharField(max_length=1500, blank=True, default="")
+    path_uz = models.CharField(max_length=1500, blank=True, default="")
+    barcode = models.CharField(max_length=40, blank=True, default="", db_index=True)
+    search = models.TextField(blank=True, default="")
+
+    class Meta:
+        verbose_name = "IKPU kodi"
+        verbose_name_plural = "IKPU kodlari"
+
+    def __str__(self):
+        return f"{self.code} · {self.name_ru or self.name_uz}"

@@ -76,3 +76,9 @@ class UzumPrefillThrottle(UserRateThrottle):
     """Uzum prefill: tavsif bo'lmasa AI (OpenAI) chaqiriladi."""
 
     scope = "uzum_prefill"
+
+
+class UzumIkpuThrottle(UserRateThrottle):
+    """IKPU tavsiyasi: AI kalit so'zlar va saralash (OpenAI) chaqiriladi."""
+
+    scope = "uzum_ikpu"

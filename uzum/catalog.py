@@ -46,6 +46,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -249,6 +250,9 @@ def write_catalog(catalog: dict) -> Path:
 
 # ------------------------------------------------------------------ o'qish
 
+_WORD = re.compile(r"\w+")
+
+
 def _norm(text: str) -> str:
     return " ".join(str(text).replace("ё", "е").replace("Ё", "Е").split()).casefold()
 
@@ -304,27 +308,50 @@ class Catalog:
                 contains.append(value)
         return (starts + contains)[:limit]
 
-    def search_categories(self, query: str, limit: int = 50) -> list[dict]:
+    def search_categories(self, query: str, limit: int = 50, extra: str = "") -> list[dict]:
+        """Ruscha, lotincha (transliteratsiya) va o'zbekcha so'zlar bilan qidiruv.
+
+        Har bir so'rov so'zi uchun muqobillar to'plami olinadi (search_text.py):
+        so'z kategoriya yo'lida bo'lsa mos keladi; so'z boshi bilan mos kelish
+        (``sp`` → ``Спорт``) so'z ichidagi mos kelishdan yuqori turadi.
+        """
+        from .search_text import phrase_alternatives
+
         q = _norm(query or "")
         if not q:
             return self.popular(limit)
         if q.isdigit():
             cat = self.categories.get(int(q))
             return [cat] if cat and cat["leaf"] else []
-        tokens = q.split()
+        groups = [{_norm(a) for a in alts} for alts in phrase_alternatives(q)]
+        if extra:
+            groups = [{_norm(a) for a in alts} for alts in phrase_alternatives(extra)] or groups
+        groups = [g for g in groups if g]
+        if not groups:
+            return []
         ranked = []
         for cat, title, path in self._search:
-            if not all(t in path for t in tokens):
+            title_words = _WORD.findall(title)
+            path_words = _WORD.findall(path)
+            score = 0
+            matched = True
+            for alts in groups:
+                if any(w.startswith(a) for a in alts for w in title_words):
+                    score += 0
+                elif any(a in title for a in alts):
+                    score += 2
+                elif any(w.startswith(a) for a in alts for w in path_words):
+                    score += 3
+                elif any(a in path for a in alts):
+                    score += 5
+                else:
+                    matched = False
+                    break
+            if not matched:
                 continue
             if title == q:
-                rank = 0
-            elif title.startswith(q):
-                rank = 1
-            elif all(t in title for t in tokens):
-                rank = 2
-            else:
-                rank = 3
-            ranked.append((rank, len(path), path, cat))
+                score -= 2
+            ranked.append((score, len(path), path, cat))
         ranked.sort(key=lambda item: item[:3])
         return [item[3] for item in ranked[:limit]]
 

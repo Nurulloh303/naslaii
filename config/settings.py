@@ -190,6 +190,7 @@ REST_FRAMEWORK = {
         # Uzum XLSM eksporti (rasm nusxalari + fayl yasash) va prefill (AI tavsif bo'lishi mumkin).
         "uzum_export": os.environ.get("THROTTLE_UZUM_EXPORT", "30/hour"),
         "uzum_prefill": os.environ.get("THROTTLE_UZUM_PREFILL", "60/hour"),
+        "uzum_ikpu": os.environ.get("THROTTLE_UZUM_IKPU", "120/hour"),
     },
 }
 

@@ -6,6 +6,7 @@ urlpatterns = [
     path("categories", views.categories, name="uzum-categories"),
     path("categories/<int:category_id>", views.category_detail, name="uzum-category"),
     path("dictionary", views.dictionary, name="uzum-dictionary"),
+    path("ikpu", views.ikpu, name="uzum-ikpu"),
     path("prefill", views.prefill, name="uzum-prefill"),
     path("validate", views.validate, name="uzum-validate"),
     path("exports", views.exports, name="uzum-exports"),

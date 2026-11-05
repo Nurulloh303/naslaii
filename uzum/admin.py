@@ -13,3 +13,17 @@ class UzumExportAdmin(admin.ModelAdmin):
         "user", "job", "category_id", "category_path", "template_sha", "draft", "sku_count", "file_path",
         "photo_paths", "status", "errors", "idempotency_key", "draft_hash", "created_at",
     )
+
+
+from .models import IkpuCode  # noqa: E402
+
+
+@admin.register(IkpuCode)
+class IkpuCodeAdmin(admin.ModelAdmin):
+    list_display = ("code", "name_ru", "name_uz", "barcode")
+    search_fields = ("code", "name_ru", "name_uz", "barcode")
+    readonly_fields = ("code", "name_ru", "name_uz", "path_ru", "path_uz", "barcode", "search")
+    list_per_page = 50
+
+    def has_add_permission(self, request):
+        return False
