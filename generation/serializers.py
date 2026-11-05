@@ -104,8 +104,10 @@ def result_payload(raw: dict, index: int, request=None) -> dict:
                 layer_copy["url"] = _absolute(str(layer_copy.get("url") or ""), request)
                 layers.append(layer_copy)
 
-    return {
+    payload = {
         "id": str(raw.get("id") or f"result-{index + 1}"),
+        # Fayl yo'li: /api/files/<path> orqali (CORS + ?download=1) yuklab olish uchun.
+        "url": url,
         "title": raw.get("title") or f"{index + 1}-variant",
         "previewUrl": url,
         "downloadUrl": url,
@@ -118,6 +120,15 @@ def result_payload(raw: dict, index: int, request=None) -> dict:
         **layers_fields(raw, request),
         "layersVersion": raw.get("layersVersion") or (1 if layers else None),
     }
+    # O'lchamni moslash (content_type="resize") natijasi.
+    if raw.get("mode"):
+        payload.update({
+            "mode": raw.get("mode"),
+            "upscaled": bool(raw.get("upscaled")),
+            "originalWidth": int(raw.get("originalWidth") or 0),
+            "originalHeight": int(raw.get("originalHeight") or 0),
+        })
+    return payload
 
 
 

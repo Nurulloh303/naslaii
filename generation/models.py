@@ -8,6 +8,7 @@ CONTENT_TYPE_CHOICES = [
     ("fashion", "fashion"),
     ("copyStyle", "copyStyle"),
     ("marketplacePackage", "marketplacePackage"),
+    ("resize", "resize"),
 ]
 
 STATUS_CHOICES = [

@@ -341,7 +341,8 @@ X_FRAME_OPTIONS = "DENY"
 # принимает до четырёх картинок сразу, поэтому предел по умолчанию
 # (2.5 МБ) для нас мал. Верхняя граница нужна: без неё один запрос на
 # сотни мегабайт кладёт процесс.
-DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_MAX_BODY_BYTES", 20 * 1024 * 1024))
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_MAX_BODY_BYTES", 24 * 1024 * 1024))
+# ^ 24 МБ: /api/resize принимает файл до 15 МБ, в base64 это ~20 МБ + JSON.
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 200
 

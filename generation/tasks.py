@@ -65,7 +65,14 @@ def run_job(job: GenerationJob) -> None:
     job.message = "AI generatsiya qilinmoqda"
     job.save(update_fields=["status", "progress", "message", "updated_at"])
 
-    provider = get_provider()
+    if job.content_type == "resize":
+        from .resize import ResizeProvider
+
+        provider = ResizeProvider()
+        job.message = "Rasm 1080×1440 ga moslanmoqda"
+        job.save(update_fields=["message", "updated_at"])
+    else:
+        provider = get_provider()
     total = total_renders(job.settings or {})
     _ensure_page_copy(job)
 

@@ -33,6 +33,7 @@ urlpatterns = [
     # --- генерация ----------------------------------------------------
     path("api/analyze", generation_views.analyze, name="analyze"),
     path("api/plan", generation_views.plan_view, name="plan"),
+    path("api/resize", generation_views.create_resize, name="resize-create"),
     path("api/generations", generation_views.create_generation, name="generation-create"),
     path("api/generations/<int:pk>", generation_views.generation_detail, name="generation-detail"),
     path("api/generations/<int:pk>/cancel", generation_views.cancel_generation, name="generation-cancel"),

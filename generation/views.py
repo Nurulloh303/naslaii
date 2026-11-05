@@ -217,6 +217,162 @@ def create_generation(request):
     )
 
 
+RESIZE_DEFAULT_TITLE = "O'lcham: 1080×1440"
+
+
+def _resize_error(code: str, message: str, http_status: int = 400) -> Response:
+    return Response({"error": code, "message": message}, status=http_status)
+
+
+def _unit_float(value, default: float = 0.5):
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return max(0.0, min(1.0, number))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([GenerationThrottle])
+def create_resize(request):
+    """O'lchamni moslash: bitta rasm → 1080×1440 (Uzum, 3:4). 1 token, rejimdan qat'i nazar.
+
+    ``POST /api/resize`` ``{image, mode, color?, focusX?, focusY?, title?, idempotencyKey?}``.
+    Natija oddiy generatsiya kabi: ``GET /api/generations/<id>`` orqali kuzatiladi,
+    ``POST /api/generations/<id>/cancel`` bilan bekor qilinadi (token qaytadi).
+    """
+    from .resize import MODES, HEX_COLOR_RE, BadImage, decode_upload, has_transparency, store_source
+
+    data = request.data if isinstance(request.data, dict) else {}
+    idempotency_key = str(data.get("idempotencyKey") or request.headers.get("Idempotency-Key", "") or "")
+    if idempotency_key and not IDEMPOTENCY_KEY_RE.match(idempotency_key):
+        return _resize_error("INVALID_IDEMPOTENCY_KEY", "Idempotency-Key noto'g'ri formatda")
+    if idempotency_key:
+        existing = GenerationJob.objects.filter(user=request.user, idempotency_key=idempotency_key).first()
+        if existing:
+            request.user.refresh_from_db(fields=["balance"])
+            return Response(
+                {"job": job_payload(existing, request), "balance": request.user.balance, "idempotentReplay": True},
+                status=status.HTTP_200_OK,
+            )
+
+    mode = data.get("mode")
+    if mode not in MODES:
+        return _resize_error("BAD_MODE", "Rejim noto'g'ri. ai, blur, color yoki crop dan birini tanlang.")
+
+    color = data.get("color")
+    if mode == "color":
+        color = color or "auto"
+        if color != "auto" and not (isinstance(color, str) and HEX_COLOR_RE.match(color)):
+            return _resize_error("BAD_MODE", "Rang #RRGGBB ko'rinishida yoki \"auto\" bo'lishi kerak.")
+    else:
+        color = None
+
+    focus_x, focus_y = _unit_float(data.get("focusX")), _unit_float(data.get("focusY"))
+    if focus_x is None or focus_y is None:
+        return _resize_error("BAD_MODE", "focusX va focusY 0 dan 1 gacha son bo'lishi kerak.")
+
+    try:
+        raw, image = decode_upload(data.get("image"))
+    except BadImage as error:
+        return _resize_error("BAD_IMAGE", str(error))
+
+    title = " ".join(str(data.get("title") or "").split())[:200] or RESIZE_DEFAULT_TITLE
+
+    prune_old_jobs(request.user)
+
+    tokens_needed = quote_for({"contentType": "resize"})["tokens"]
+    label = f"O'lchamni moslash · {mode}"
+    api_key = getattr(request, "api_key", None)
+    if isinstance(api_key, ApiKey):
+        try:
+            key_debit(api_key, tokens_needed, label)
+        except InsufficientBalance as exc:
+            return Response({"error": "INSUFFICIENT_TOKENS", "message": str(exc)}, status=402)
+        user = request.user
+        user.refresh_from_db()
+    else:
+        try:
+            user = debit(request.user, tokens_needed, label)
+        except InsufficientBalance as exc:
+            return Response({"error": "INSUFFICIENT_TOKENS", "message": str(exc)}, status=402)
+
+    try:
+        source_path = store_source(raw, image, user.pk)
+    except Exception:  # noqa: BLE001 — saqlanmasa token qaytadi
+        logger.exception("Resize: asl rasmni saqlab bo'lmadi")
+        if isinstance(api_key, ApiKey):
+            from billing.services import key_credit
+
+            key_credit(api_key, tokens_needed, f"Qaytarish · {label}")
+        else:
+            refund(user, tokens_needed, f"Qaytarish · {label}")
+        user.refresh_from_db(fields=["balance"])
+        return Response(
+            {"error": "STORAGE_FAILED", "message": "Rasmni saqlab bo'lmadi. Tokenlar qaytarildi.", "balance": user.balance},
+            status=503,
+        )
+
+    settings_payload = {
+        "contentType": "resize",
+        "marketplace": "uzum",
+        "mode": mode,
+        "color": color,
+        "focusX": focus_x,
+        "focusY": focus_y,
+        "sourcePath": source_path,
+        "sourceWidth": image.width,
+        "sourceHeight": image.height,
+        "sourceFormat": (image.format or "").lower(),
+        "hasAlpha": has_transparency(image),
+    }
+    job = GenerationJob.objects.create(
+        user=user,
+        content_type="resize",
+        title=title,
+        settings=settings_payload,
+        tokens_charged=tokens_needed,
+        api_key=api_key if isinstance(api_key, ApiKey) else None,
+        idempotency_key=idempotency_key,
+        status="queued",
+        message="Vazifa navbatda",
+    )
+
+    try:
+        enqueue(job)
+    except Exception:
+        logger.exception("Resize vazifasini navbatga qo'shib bo'lmadi: job=%s", job.pk)
+        job.refresh_from_db()
+        if job.tokens_charged and not job.refunded:
+            refund_job(job, job.tokens_charged, "Navbatga qo'shilmadi · resize")
+            job.refunded = True
+        if job.status not in {"success", "failed"}:
+            job.status = "failed"
+            job.progress = 100
+            job.message = "Navbat ishlamayapti"
+            job.error = "QUEUE_UNAVAILABLE"
+        job.save()
+        user.refresh_from_db(fields=["balance"])
+        return Response(
+            {"error": "QUEUE_UNAVAILABLE", "message": "Server band. Tokenlar qaytarildi, birozdan so'ng qayta urinib ko'ring."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    job.refresh_from_db()
+    user.refresh_from_db(fields=["balance"])
+    return Response(
+        {"job": job_payload(job, request), "balance": user.balance, "idempotentReplay": False},
+        status=status.HTTP_201_CREATED,
+    )
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def generation_detail(request, pk: int):
@@ -262,6 +418,16 @@ def _brief_text_file(job) -> str:
     return "\n".join(lines)
 
 
+def _source_url(job, request=None):
+    settings_payload = job.settings or {}
+    if settings_payload.get("assetDataUrl"):
+        return settings_payload["assetDataUrl"]
+    path = settings_payload.get("sourcePath")
+    if path:
+        return _absolute(default_storage.url(path), request)
+    return None
+
+
 @api_view(["GET", "DELETE"])
 @permission_classes([IsAuthenticated])
 def project_detail(request, pk: int):
@@ -294,7 +460,7 @@ def project_detail(request, pk: int):
         "contentType": job.content_type,
         # Asl mahsulot rasmi settings ichida data: URL sifatida saqlangan —
         # alohida fayl kerak emas, to'g'ridan-to'g'ri <img src> bo'ladi.
-        "sourceUrl": (job.settings or {}).get("assetDataUrl") or None,
+        "sourceUrl": _source_url(job, request),
         "archiveUrl": f"/api/projects/{job.pk}/archive.zip",
         "brief": {
             "title": job.title,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 from django.contrib import admin
+from django.core.files.storage import default_storage
 from django.db.models import Q
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import mark_safe
@@ -36,7 +37,10 @@ CONTENT_LABELS = {
     "fashion": "Fashion",
     "copyStyle": "Uslubdan nusxa",
     "marketplacePackage": "Marketplace paketi",
+    "resize": "O'lcham moslash",
 }
+
+RESIZE_MODE_LABELS = {"ai": "AI kengaytirish", "blur": "Xira fon", "color": "Rangli fon", "crop": "Kesish"}
 
 # Xom sozlamalarni ko'rsatishda data:URL'larni qisqartiramiz.
 _DATA_URL_KEYS = ("assetDataUrl", "designReferenceDataUrl")
@@ -169,6 +173,17 @@ class GenerationJobAdmin(admin.ModelAdmin):
     @admin.display(description="Brif")
     def brief_block(self, obj):
         settings = obj.settings or {}
+        if obj.content_type == "resize":
+            rows = [
+                ("Nomi", obj.title or "—"),
+                ("Rejim", RESIZE_MODE_LABELS.get(settings.get("mode"), settings.get("mode") or "—")),
+                ("Rang", settings.get("color") or "—"),
+                ("Fokus", f"{settings.get('focusX', 0.5)} / {settings.get('focusY', 0.5)}"),
+                ("Asl o'lcham", f"{settings.get('sourceWidth') or '?'}×{settings.get('sourceHeight') or '?'}"
+                                f" · {settings.get('sourceFormat') or '?'}" + (" · shaffof" if settings.get("hasAlpha") else "")),
+            ]
+            table = format_html_join("", "<tr><th style='text-align:left;padding:2px 12px 2px 0'>{}</th><td>{}</td></tr>", rows)
+            return format_html("<table>{}</table>", table)
         benefits = [b for b in (obj.benefits or []) if b]
         rows = [
             ("Nomi", obj.title or "—"),
@@ -188,6 +203,8 @@ class GenerationJobAdmin(admin.ModelAdmin):
     def input_images(self, obj):
         settings = obj.settings or {}
         src = str(settings.get("assetDataUrl") or "")
+        if not src and settings.get("sourcePath"):
+            src = default_storage.url(settings["sourcePath"])
         return mark_safe(_img(src, 260)) if src else "—"
 
     @admin.display(description="Referens")
@@ -220,6 +237,12 @@ class GenerationJobAdmin(admin.ModelAdmin):
                 meta.append(f"urinish: {result['promptTier']}")
             if result.get("referenceUsed") is False:
                 meta.append("referenssiz")
+            if result.get("mode"):
+                meta.append(RESIZE_MODE_LABELS.get(result["mode"], result["mode"]))
+                if result.get("upscaled"):
+                    meta.append(f"kattalashtirilgan ({result.get('upscaler') or '?'})")
+                if result.get("outpainted"):
+                    meta.append("AI chetlarni chizgan")
             if result.get("layers") or result.get("elements"):
                 meta.append("Magic Layers ochilgan")
             cards.append(format_html(

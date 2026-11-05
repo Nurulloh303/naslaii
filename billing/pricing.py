@@ -117,7 +117,7 @@ VIDEO_TOKEN_MULTIPLIER = {5: 3, 10: 5}
 FIXED_IMAGE_SIZE = {"width": 1080, "height": 1440}
 ALLOWED_VARIANTS = (1, 2, 4)
 ALLOWED_PAGES = (1, 2, 3, 4, 5)
-CONTENT_TYPES = ("photo", "card", "video", "fashion", "copyStyle", "marketplacePackage")
+CONTENT_TYPES = ("photo", "card", "video", "fashion", "copyStyle", "marketplacePackage", "resize")
 MARKETPLACE_LABELS = {"uzum": "Uzum", "ozon": "Ozon", "wb": "WB"}
 
 STARTER_TOKENS = _env_int("STARTER_TOKENS", 2)
@@ -132,6 +132,8 @@ def total_renders(settings: dict) -> int:
     В пакете картинка — это слайд, и их число выбирает продавец
     (3-8). Старый клиент поля не присылает — остаётся прежняя пятёрка.
     """
+    if settings.get("contentType") == "resize":
+        return 1
     if settings.get("contentType") == "marketplacePackage":
         return package_slides(settings, MARKETPLACE_PACKAGE_VARIANTS)
     variants = int(settings.get("variants") or 1)
@@ -150,6 +152,14 @@ def quote_for(settings: dict) -> dict:
             "tokens": VIDEO_TOKEN_MULTIPLIER[duration],
             "label": f"Video · {duration} soniya",
             "breakdown": "Video hali ulanmagan — narx dastlabki.",
+        }
+
+    if content_type == "resize":
+        # O'lchamni moslash: istalgan rejim (ai/blur/color/crop) — bitta rasm.
+        return {
+            "tokens": TOKENS_PER_IMAGE,
+            "label": f"O'lchamni moslash · {FIXED_IMAGE_SIZE['width']}x{FIXED_IMAGE_SIZE['height']}",
+            "breakdown": f"1 rasm = {TOKENS_PER_IMAGE} token.",
         }
 
     images = total_renders(settings)
