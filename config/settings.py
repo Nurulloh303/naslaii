@@ -431,6 +431,8 @@ UZUM_EXPORT_ROOT = os.environ.get("UZUM_EXPORT_ROOT", "").strip() or str(BASE_DI
 # (masalan "," yoki "\n" — yangi qator).
 # IKPU uzunligi: shablon "16 символов" deydi, MXIK klassifikatori esa 17 xonali.
 UZUM_IKPU_LENGTHS = os.environ.get("UZUM_IKPU_LENGTHS", "16,17")
+# Uzum importi: "Значение цены не кратно 1000" — narxlar 1000 so'mga karrali.
+UZUM_PRICE_STEP = int(os.environ.get("UZUM_PRICE_STEP", "1000"))
 
 UZUM_PHOTO_SEPARATOR = (
     os.environ.get("UZUM_PHOTO_SEPARATOR", ";").replace("\\n", "\n").replace("\\t", "\t") or ";"

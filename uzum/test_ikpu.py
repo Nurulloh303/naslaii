@@ -108,3 +108,4 @@ class UzbekCategoryNamesTests(TestCase):
         self.assertTrue(any(c["titleUz"] == "Dazmollar" for c in catalog.search_categories("dazmol")[:3]))
         # Asl katalog ma'lumoti o'zgarmaydi (shablondan qayta yasash testi uchun muhim).
         self.assertNotIn("titleUz", catalog.data["categories"][0])
+

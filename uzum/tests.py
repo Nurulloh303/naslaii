@@ -282,6 +282,16 @@ class ApiTests(TempStorageMixin, TestCase):
             self.assertIn(expected, fields)
         self.assertTrue(all(e["message"] for e in errors))
 
+    def test_price_must_be_multiple_of_1000(self):
+        draft = base_draft(self.job)
+        draft["skus"][0]["price"] = 125500
+        draft["skus"][0]["oldPrice"] = 150500
+        ok, fields, errors = self.errors_for(draft)
+        self.assertFalse(ok)
+        self.assertIn(("price", 0), fields)
+        self.assertIn(("oldPrice", 0), fields)
+        self.assertTrue(any("126 000" in e["message"] for e in errors), errors)
+
     def test_duplicate_variants_and_missing_photos(self):
         draft = base_draft(self.job, photos=[])
         draft["skus"][1]["color"] = "Белый"

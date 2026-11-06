@@ -60,6 +60,20 @@ INT_FIELDS = (
 )
 
 
+def price_step() -> int:
+    """Uzum: "Значение цены не кратно 1000" — narx va eski narx 1000 so'mga karrali."""
+    from django.conf import settings
+
+    try:
+        return max(1, int(getattr(settings, "UZUM_PRICE_STEP", 1000)))
+    except (TypeError, ValueError):
+        return 1000
+
+
+def _round_price(value: int, step: int) -> int:
+    return max(step, int(round(value / step)) * step)
+
+
 def ikpu_lengths() -> set[int]:
     """Ruxsat etilgan IKPU uzunliklari.
 
@@ -367,6 +381,9 @@ def validate_draft(draft, user, catalog: Catalog, *, check_images: bool = True):
             item[key] = value
 
         price = item.get("price")
+        step = price_step()
+        if isinstance(price, int) and price > 0 and price % step:
+            err("price", f"Uzum narxni {step:,} so'mga karrali qabul qiladi (masalan {_round_price(price, step):,} so'm)".replace(",", " "), index)
         raw_old = sku.get("oldPrice")
         if _blank(raw_old):
             old = price  # chegirma yo'q — eski narx = narx
@@ -378,6 +395,8 @@ def validate_draft(draft, user, catalog: Catalog, *, check_images: bool = True):
                 err("oldPrice", "Chegirmagacha narx noto'g'ri", index)
             elif isinstance(price, int) and old < price:
                 err("oldPrice", "Chegirmagacha narx sotuv narxidan kam bo'lmasin", index)
+            elif old % step:
+                err("oldPrice", f"Uzum narxni {step:,} so'mga karrali qabul qiladi (masalan {_round_price(old, step):,} so'm)".replace(",", " "), index)
         item["oldPrice"] = old
 
         variant = (color, size)
