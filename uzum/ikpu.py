@@ -70,25 +70,31 @@ def _row(item: IkpuCode, score: float = 0) -> dict:
     }
 
 
-def _score(item: IkpuCode, groups) -> float:
+def _score(item: IkpuCode, groups, weights: list[float] | None = None) -> float:
     name = normalize(f"{item.name_ru} {item.name_uz}")
     name_words = name.split()
     full_text = item.search
     score = 0.0
-    for full, stems in groups:
+    for index, (full, stems) in enumerate(groups):
+        weight = weights[index] if weights else 1.0
         if any(w.startswith(a) for a in full for w in name_words):
-            score += 4
+            score += 4 * weight
         elif any(w.startswith(a) for a in stems for w in name_words):
-            score += 3
+            score += 3 * weight
         elif any(a in name for a in stems):
-            score += 2
+            score += 2 * weight
         elif any(a in full_text for a in stems):
+            score += 1 * weight
+    # Umumiy kod (brendsiz, ...000xxx) — ko'pchilik sotuvchi uchun to'g'ri tanlov.
+    if item.code[11:14] == "000":
+        score += 5
+        if item.code[14:] == "000":
             score += 1
     # Qisqa, aniq nomlar uzun ro'yxat nomlaridan yaxshiroq.
-    return score - min(len(name_words), 30) * 0.02
+    return score - min(len(name_words), 30) * 0.05
 
 
-def search(text: str, limit: int = 10, require_all: bool = True) -> list[dict]:
+def search_items(text: str, limit: int = 10, require_all: bool = True, generic_only: bool = False) -> list[tuple[float, IkpuCode]]:
     groups = query_groups(text)
     if not groups:
         return []
@@ -98,11 +104,18 @@ def search(text: str, limit: int = 10, require_all: bool = True) -> list[dict]:
         for alt in stems:
             part |= Q(search__contains=alt)
         query = (query & part) if require_all else (query | part)
-    candidates = list(IkpuCode.objects.filter(query)[:CANDIDATE_LIMIT])
+    queryset = IkpuCode.objects.filter(query)
+    if generic_only:
+        queryset = queryset.filter(generic=True)
+    candidates = list(queryset[:CANDIDATE_LIMIT])
     if not candidates and require_all and len(groups) > 1:
-        return search(text, limit, require_all=False)
+        return search_items(text, limit, require_all=False, generic_only=generic_only)
     ranked = sorted(((_score(item, groups), item) for item in candidates), key=lambda pair: (-pair[0], pair[1].code))
-    return [_row(item, score) for score, item in ranked[:limit]]
+    return ranked[:limit]
+
+
+def search(text: str, limit: int = 10, require_all: bool = True) -> list[dict]:
+    return [_row(item, score) for score, item in search_items(text, limit, require_all)]
 
 
 def by_barcode(barcode: str) -> list[dict]:
@@ -187,26 +200,40 @@ def ai_rerank(title: str, category: str, candidates: list[dict], limit: int) -> 
 
 
 def suggest(title: str, category: str, barcode: str = "", limit: int = 5, use_ai: bool = True) -> list[dict]:
-    """Mahsulot nomi + Uzum kategoriyasi bo'yicha eng mos IKPU variantlari."""
-    found: list[dict] = []
-    seen: set[str] = set()
+    """Mahsulot nomi + Uzum kategoriyasi bo'yicha eng mos IKPU variantlari.
 
-    def add(items):
-        for item in items:
-            if item["code"] not in seen:
-                seen.add(item["code"])
-                found.append(item)
-
-    add(by_barcode(barcode))
-    leaf = (category or "").split(">")[-1].strip()
+    Bir nechta so'rov (AI iboralari, kategoriya, nom) natijalari birlashtiriladi
+    va hammasi BIR xil o'lchov bilan qayta saralanadi — umumiy (brendsiz) kodlar oldinda.
+    """
+    exact = by_barcode(barcode)
+    parts = [p.strip() for p in (category or "").split(">") if p.strip()]
+    leaf = parts[-1] if parts else ""
+    parent = parts[-2] if len(parts) > 1 else ""
     phrases = ai_keywords(title, category) if use_ai else []
-    for phrase in phrases:
-        add(search(phrase, 15))
-    add(search(f"{leaf} {title}", 15))
-    add(search(leaf, 15))
-    add(search(title, 15))
+    pool: dict[str, IkpuCode] = {}
+    for text in (*phrases, leaf, f"{parent} {leaf}", title):
+        for _, item in search_items(text, 40):
+            pool.setdefault(item.code, item)
+    # Umumiy kodlar: kategoriya va AI iboralarining har bir so'zi alohida (brendli
+    # kodlarda ko'p uchraydigan so'zlar umumiy kodni siqib chiqarmasin).
+    for text in (*phrases, leaf):
+        for word in normalize(text).split():
+            for _, item in search_items(word, 30, generic_only=True):
+                pool.setdefault(item.code, item)
+    # Og'irliklar: AI iboralari va kategoriya nomi eng ishonchli, mahsulot nomi — qo'shimcha.
+    groups, weights = [], []
+    for text, weight in [*((p, 3.0) for p in phrases), (leaf, 3.0), (parent, 1.0), (title, 1.0)]:
+        for group in query_groups(text):
+            groups.append(group)
+            weights.append(weight)
+    scored = [(_score(item, groups, weights), item) for item in pool.values()]
+    best = max((score for score, _ in scored), default=0)
+    taken = {e["code"] for e in exact}
+    # Brendli kod — boshqa ishlab chiqaruvchining aniq tovari; o'z tovariga sotuvchi
+    # odatda umumiy (brendsiz) kodni oladi. Shuning uchun umumiy kodlar har doim oldinda.
+    scored.sort(key=lambda pair: (not pair[1].generic, -pair[0], pair[1].code))
+    # Juda kuchsiz mosliklar (bitta umumiy so'z) — chiqarmaymiz.
+    found = [_row(item, score) for score, item in scored if item.code not in taken and score >= best * 0.5]
     if use_ai and len(found) > limit:
-        exact = [c for c in found if c.get("score") == 99]
-        rest = [c for c in found if c.get("score") != 99]
-        return (exact + ai_rerank(title, category, rest, limit))[:limit]
-    return found[:limit]
+        found = ai_rerank(title, category, found[:40], limit)
+    return (exact + found)[:limit]

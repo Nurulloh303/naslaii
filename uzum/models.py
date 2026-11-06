@@ -70,6 +70,8 @@ class IkpuCode(models.Model):
     path_ru = models.CharField(max_length=1500, blank=True, default="")
     path_uz = models.CharField(max_length=1500, blank=True, default="")
     barcode = models.CharField(max_length=40, blank=True, default="", db_index=True)
+    # Brendsiz umumiy kod (13-15 xonalar "000") — tavsiyada asosiy nomzodlar.
+    generic = models.BooleanField(default=False, db_index=True)
     search = models.TextField(blank=True, default="")
 
     class Meta:

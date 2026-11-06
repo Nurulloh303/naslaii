@@ -53,7 +53,7 @@ class IkpuImportTests(TestCase):
         self.assertEqual(len(ball.code), 17)
         self.assertEqual(ball.name_uz, "Futbol to'pi")
         self.assertEqual(ball.barcode, "4600000000017")
-        self.assertIn("Спорт > Мячи", ball.path_ru)
+        self.assertEqual(ball.path_ru, "Мячи футбольные")
 
     def test_search_ru_uz_latin(self):
         self.assertEqual(ikpu.search("мяч футбольный")[0]["code"], "06950400001000000")
