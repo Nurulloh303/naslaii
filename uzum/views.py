@@ -55,8 +55,11 @@ def category_detail(request, category_id: int):
     cat = get_catalog().categories.get(category_id)
     if cat is None or not cat["leaf"]:
         return Response({"error": "CATEGORY_NOT_FOUND", "message": "Kategoriya topilmadi"}, status=404)
+    from .catalog import allowed_size_types
+
     return Response({
         **_category_brief(cat),
+        "sizeTypes": allowed_size_types(get_catalog(), cat),
         "filters": [
             {"id": f["id"], "name": f["name"], "values": f["values"], "multiple": f["multiple"], "required": f["required"]}
             for f in cat["filters"]
@@ -70,7 +73,14 @@ def dictionary(request):
     if kind not in DICTIONARY_KINDS:
         return Response({"error": "BAD_DICTIONARY", "message": "type: brand, color, size yoki country"}, status=400)
     query = str(request.query_params.get("q") or "")[:100]
-    return Response({"values": get_catalog().search_dictionary(kind, query, MAX_RESULTS)})
+    catalog = get_catalog()
+    size_types = None
+    raw_category = str(request.query_params.get("categoryId") or "")
+    if kind == "size" and raw_category.isdigit():
+        from .catalog import allowed_size_types
+
+        size_types = allowed_size_types(catalog, catalog.categories.get(int(raw_category)))
+    return Response({"values": catalog.search_dictionary(kind, query, MAX_RESULTS, size_types=size_types)})
 
 
 @api_view(["GET"])

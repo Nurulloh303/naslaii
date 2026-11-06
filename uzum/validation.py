@@ -17,7 +17,7 @@ import unicodedata
 
 from generation.models import GenerationJob
 
-from .catalog import Catalog
+from .catalog import Catalog, allowed_size_types, size_type
 from .ooxml import INVALID_XML_RE
 
 MAX_SKUS = 50
@@ -365,6 +365,12 @@ def validate_draft(draft, user, catalog: Catalog, *, check_images: bool = True):
             size = catalog.canonical("size", sku.get("size")) or ""
             if not size:
                 err("size", "O'lcham «Tur:Qiymat» ko'rinishida ma'lumotnomadan tanlanadi", index)
+            elif category is not None and size_type(size) not in allowed_size_types(catalog, category):
+                allowed = allowed_size_types(catalog, category)
+                if allowed:
+                    err("size", f"«{size_type(size)}» bu kategoriyaga mos emas — Uzum qabul qilmaydi", index)
+                else:
+                    err("size", "Bu kategoriyaga Uzum o'lcham qo'shtirmaydi — o'lchamni bo'sh qoldiring", index)
         item["size"] = size
 
         for key, limit, label in INT_FIELDS:

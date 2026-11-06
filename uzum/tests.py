@@ -292,6 +292,17 @@ class ApiTests(TempStorageMixin, TestCase):
         self.assertIn(("oldPrice", 0), fields)
         self.assertTrue(any("126 000" in e["message"] for e in errors), errors)
 
+    def test_size_not_allowed_for_category(self):
+        draft = base_draft(self.job, categoryId=13187)  # Мыши — o'lcham qo'yilmaydi
+        draft["skus"][0]["size"] = "Размер детских колготок:134/9–10"
+        ok, fields, errors = self.errors_for(draft)
+        self.assertIn(("size", 0), fields)
+        detail = self.client.get("/api/uzum/categories/13187").json()
+        self.assertEqual(detail["sizeTypes"], [])
+        self.assertEqual(self.client.get("/api/uzum/categories/15598").json()["sizeTypes"], [])  # futbol to'pi
+        values = self.client.get("/api/uzum/dictionary", {"type": "size", "q": "", "categoryId": 13187}).json()["values"]
+        self.assertEqual(values, [])
+
     def test_duplicate_variants_and_missing_photos(self):
         draft = base_draft(self.job, photos=[])
         draft["skus"][1]["color"] = "Белый"

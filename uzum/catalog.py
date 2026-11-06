@@ -320,8 +320,11 @@ class Catalog:
             return exact[stripped]
         return folded.get(_norm(stripped))
 
-    def search_dictionary(self, kind: str, query: str, limit: int = 50) -> list[str]:
+    def search_dictionary(self, kind: str, query: str, limit: int = 50, size_types: list[str] | None = None) -> list[str]:
         _, _, items = self._lookup[kind]
+        if kind == "size" and size_types is not None:
+            allowed = set(size_types)
+            items = [(v, n) for v, n in items if size_type(v) in allowed]
         q = _norm(query or "")
         if not q:
             return [v for v, _ in items[:limit]]
@@ -408,6 +411,69 @@ class Catalog:
                 if cat not in picked and cat["path"].count(" > ") <= 1:
                     picked.append(cat)
         return picked[:limit]
+
+
+# ------------------------------------------------------------------ o'lcham turlari
+
+# Uzum o'lcham ("предустановленная характеристика") qo'shishga faqat mos
+# kategoriyalarda ruxsat beradi — masalan "Мыши" ga o'lcham qo'yilsa import
+# "toifasi uchun oldindan belgilangan tavsiflarni yaratib bo'lmaydi" xatosini beradi.
+# Shablonda kategoriya → o'lcham turi bog'lanishi yo'q, shuning uchun qoidalar
+# yuqori bo'lim bo'yicha: (o'lcham turi nomidagi so'z, ruxsat etilgan bo'limlar).
+_CLOTHES = r"одежд|форма\b|бель|носк|гольф|колгот|чулк|костюм|купальн|плавк|кимоно|леггинс|лосин|футболк|майк|брюк|штан|шорт|юбк|плать|куртк|комбинезон|худи|свитш|толстовк|джемпер|кофт|рубаш|блуз|жилет|пижам|халат|бюстгальтер|трус|боди\b|ползун|перчат|варежк"
+_SHOES = r"обув|кроссов|кед|бутс|ботин|сапог|туфл|сандал|тапк|шлепан|сланц|мокасин|лофер|балетк"
+# (o'lcham turi nomidagi so'z, mos kategoriya yo'li (regex), har doim ruxsat bo'limlari)
+SIZE_RULES = (
+    ("шин", r"шин", ()),
+    ("обуви", _SHOES, ("Обувь",)),
+    ("подгузник", r"подгуз|пеленк|трусик", ()),
+    ("колец", r"кольц", ()),
+    ("ремня", r"ремн|ремен|пояс", ()),
+    ("головных уборов", r"головн|шапк|кепк|бейсболк|панам|шляп|берет|балаклав|тюбетей|чалм", ()),
+    ("носков", r"носк|гольф|следк|подследник", ()),
+    ("колгот", r"колгот|чулк", ()),
+    ("бюстгальтер", r"бюстгальтер|бель|купальн", ()),
+    ("джинс", r"джинс|брюк|штан", ("Одежда",)),
+    ("рубашек", r"рубаш|сорочк", ("Одежда",)),
+    ("одежд", _CLOTHES, ("Одежда",)),
+    ("двойные", _CLOTHES, ("Одежда",)),
+)
+
+
+def size_type(value: str) -> str:
+    return str(value or "").split(":", 1)[0].strip()
+
+
+# Nomida kiyim/poyabzal so'zi bor, lekin o'zi kiyim emas (poyabzal kremi, shina qopqog'i...).
+_NOT_WEARABLE = r"для обув|за обув|для шин|шин и дисков|за шинами|давления шин|устройств|двигател|безопасност|багаж|для техники|для швейных|шиномонтаж|для тетрад|баскетбольн|объектив|для выпечк|под елку|крепеж|для стирки|для чистки|для пельмен|для наращивания|поясные сумки"
+
+
+def _size_type_allowed(kind: str, path: str) -> bool:
+    lower = kind.lower()
+    top = path.split(" > ")[0]
+    leaf = path.split(" > ")[-1].lower()
+    for word, pattern, tops in SIZE_RULES:
+        if word in lower:
+            if top in tops:
+                return True
+            if re.search(_NOT_WEARABLE, path.lower()):
+                return False
+            # Faqat oxirgi kategoriya nomi va so'z boshidan: "шин" → "Шины", "Машины" emas.
+            return bool(re.search(rf"\b(?:{pattern})", leaf))
+    return False
+
+
+def allowed_size_types(catalog: "Catalog", category: dict | None) -> list[str]:
+    """Shu kategoriyaga qo'yish mumkin bo'lgan o'lcham turlari (bo'sh — o'lcham qo'yilmaydi)."""
+    if not category:
+        return []
+    path = category["path"]
+    kinds = []
+    for value in catalog.sizes:
+        kind = size_type(value)
+        if kind not in kinds and _size_type_allowed(kind, path):
+            kinds.append(kind)
+    return kinds
 
 
 _lock = threading.Lock()
