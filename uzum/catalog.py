@@ -257,15 +257,42 @@ def _norm(text: str) -> str:
     return " ".join(str(text).replace("ё", "е").replace("Ё", "Е").split()).casefold()
 
 
+_APOSTROPHES = str.maketrans("", "", "'ʻʼ`’‘")
+
+
+def _snorm(text: str) -> str:
+    """Qidiruv uchun: o'zbekcha tutuq belgilari olib tashlanadi ("Oʻyinchoq" = "o'yinchoq" = "oyinchoq")."""
+    return _norm(str(text or "").translate(_APOSTROPHES))
+
+
+def names_path(sha: str) -> Path:
+    """Kategoriyalarning o'zbekcha nomlari va komissiyasi (Uzum komissiya jadvallaridan)."""
+    return CATALOG_DIR / f"names_{sha}.json"
+
+
 class Catalog:
     """Xotiradagi katalog va qidiruv indekslari."""
 
     def __init__(self, data: dict):
         self.data = data
         self.sha = data["sha"]
-        self.categories = {c["id"]: c for c in data["categories"]}
-        self.leaves = [c for c in data["categories"] if c["leaf"]]
-        self._search = [(c, _norm(c["title"]), _norm(c["path"])) for c in self.leaves]
+        names = {}
+        try:
+            names = json.loads(names_path(self.sha).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        # Asl ``data`` o'zgarmaydi — o'zbekcha nom va komissiya nusxaga qo'shiladi.
+        cats = []
+        for cat in data["categories"]:
+            extra = names.get(str(cat["id"])) or {}
+            cats.append({**cat, "titleUz": extra.get("titleUz", ""), "pathUz": extra.get("pathUz", ""), "commission": extra.get("commission")})
+        self.categories = {c["id"]: c for c in cats}
+        self.leaves = [c for c in cats if c["leaf"]]
+        # (kategoriya, [sarlavhalar ru/uz], [yo'llar ru/uz])
+        self._search = [
+            (c, [t for t in (_snorm(c["title"]), _snorm(c["titleUz"])) if t], [p for p in (_snorm(c["path"]), _snorm(c["pathUz"])) if p])
+            for c in self.leaves
+        ]
         d = data["dictionaries"]
         self.brands = d["brands"]
         self.colors = d["colors"]
@@ -323,35 +350,37 @@ class Catalog:
         if q.isdigit():
             cat = self.categories.get(int(q))
             return [cat] if cat and cat["leaf"] else []
-        groups = [{_norm(a) for a in alts} for alts in phrase_alternatives(q)]
+        groups = [{_snorm(a) for a in alts} for alts in phrase_alternatives(q)]
         if extra:
-            groups = [{_norm(a) for a in alts} for alts in phrase_alternatives(extra)] or groups
+            groups = [{_snorm(a) for a in alts} for alts in phrase_alternatives(extra)] or groups
+        groups = [{a for a in g if a} for g in groups]
         groups = [g for g in groups if g]
         if not groups:
             return []
+        qs = _snorm(q)
         ranked = []
-        for cat, title, path in self._search:
-            title_words = _WORD.findall(title)
-            path_words = _WORD.findall(path)
+        for cat, titles, paths in self._search:
+            title_words = [w for t in titles for w in _WORD.findall(t)]
+            path_words = [w for p in paths for w in _WORD.findall(p)]
             score = 0
             matched = True
             for alts in groups:
                 if any(w.startswith(a) for a in alts for w in title_words):
                     score += 0
-                elif any(a in title for a in alts):
+                elif any(a in t for a in alts for t in titles):
                     score += 2
                 elif any(w.startswith(a) for a in alts for w in path_words):
                     score += 3
-                elif any(a in path for a in alts):
+                elif any(a in p for a in alts for p in paths):
                     score += 5
                 else:
                     matched = False
                     break
             if not matched:
                 continue
-            if title == q:
+            if qs in titles:
                 score -= 2
-            ranked.append((score, len(path), path, cat))
+            ranked.append((score, len(cat["path"]), cat["path"], cat))
         ranked.sort(key=lambda item: item[:3])
         return [item[3] for item in ranked[:limit]]
 

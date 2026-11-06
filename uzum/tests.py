@@ -219,7 +219,8 @@ class ApiTests(TempStorageMixin, TestCase):
 
     def test_categories_endpoints(self):
         body = self.client.get("/api/uzum/categories", {"q": "футбольные мячи"}).json()
-        self.assertEqual(body["categories"][0], {"id": 15598, "title": "Футбольные мячи", "path": "Спорт и отдых > Футбол > Футбольные мячи"})
+        first = body["categories"][0]
+        self.assertEqual({k: first[k] for k in ("id", "title", "path")}, {"id": 15598, "title": "Футбольные мячи", "path": "Спорт и отдых > Футбол > Футбольные мячи"})
         self.assertLessEqual(len(self.client.get("/api/uzum/categories").json()["categories"]), 50)
         detail = self.client.get("/api/uzum/categories/15983").json()
         self.assertEqual([f["id"] for f in detail["filters"]], ["4114", "4115", "4116"])

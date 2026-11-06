@@ -95,3 +95,16 @@ class CategorySearchTests(TestCase):
         self.assertIn("Одежда", catalog.search_categories("kiyim")[0]["path"])
         self.assertIn("Кроссовки", catalog.search_categories("krossovka")[0]["title"])
         self.assertIn("Кофе", catalog.search_categories("qahva")[0]["path"])
+
+
+class UzbekCategoryNamesTests(TestCase):
+    def test_uzbek_names_and_commission(self):
+        catalog = get_catalog()
+        found = catalog.search_categories("futbol topi")
+        self.assertEqual(found[0]["id"], 15598)
+        self.assertEqual(found[0]["titleUz"], "Futbol to'plari")
+        self.assertEqual(found[0]["commission"], 25)
+        self.assertTrue(any(c["titleUz"].startswith("Oʻyinchoq") for c in catalog.search_categories("o'yinchoq")[:5]))
+        self.assertTrue(any(c["titleUz"] == "Dazmollar" for c in catalog.search_categories("dazmol")[:3]))
+        # Asl katalog ma'lumoti o'zgarmaydi (shablondan qayta yasash testi uchun muhim).
+        self.assertNotIn("titleUz", catalog.data["categories"][0])

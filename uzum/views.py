@@ -23,7 +23,10 @@ XLSM_MIME = "application/vnd.ms-excel.sheet.macroEnabled.12"
 
 
 def _category_brief(cat: dict) -> dict:
-    return {"id": cat["id"], "title": cat["title"], "path": cat["path"]}
+    return {
+        "id": cat["id"], "title": cat["title"], "path": cat["path"],
+        "titleUz": cat.get("titleUz") or "", "pathUz": cat.get("pathUz") or "", "commission": cat.get("commission"),
+    }
 
 
 @api_view(["GET"])
