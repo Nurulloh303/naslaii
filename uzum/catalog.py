@@ -358,34 +358,47 @@ class Catalog:
             groups = [{_snorm(a) for a in alts} for alts in phrase_alternatives(extra)] or groups
         groups = [{a for a in g if a} for g in groups]
         groups = [g for g in groups if g]
+        if len(groups) > 1:
+            # Ko'p so'zli so'rovda 3 harfli transliteratsiya ("qol" → "кол") shovqin beradi.
+            groups = [{a for a in g if len(a) >= 4 or not re.search(r"[а-яё]", a)} or g for g in groups]
         if not groups:
             return []
         qs = _snorm(q)
+        # Ko'p so'zli so'rovda bitta so'z topilmasa ham (masalan "qo'l sumkasi" — "qo'l"
+        # kategoriya nomida yo'q) yarmidan ko'pi mos kelganlar keyinroq ko'rsatiladi.
+        need = max(1, (len(groups) + 1) // 2)
         ranked = []
         for cat, titles, paths in self._search:
             title_words = [w for t in titles for w in _WORD.findall(t)]
             path_words = [w for p in paths for w in _WORD.findall(p)]
             score = 0
-            matched = True
-            for alts in groups:
+            missed = 0
+            last_missed = 0
+            title_hit = False
+            for index, alts in enumerate(groups):
+                # So'z ichidan qidirish faqat 4+ harfli muqobil uchun ("кол" → "Коллаген" bo'lmasin).
+                inner = [a for a in alts if len(a) >= 4]
                 if any(w.startswith(a) for a in alts for w in title_words):
-                    score += 0
-                elif any(a in t for a in alts for t in titles):
+                    title_hit = True
+                    score -= 1
+                elif any(a in t for a in inner for t in titles):
                     score += 2
+                    title_hit = True
                 elif any(w.startswith(a) for a in alts for w in path_words):
                     score += 3
-                elif any(a in p for a in alts for p in paths):
+                elif any(a in p for a in inner for p in paths):
                     score += 5
                 else:
-                    matched = False
-                    break
-            if not matched:
+                    missed += 1
+                    # O'zbekcha ("qo'l sumkasi") va ruscha ("женская сумка") iborada asosiy so'z — oxirgisi.
+                    last_missed = int(index == len(groups) - 1)
+            if len(groups) - missed < need or (missed and not title_hit):
                 continue
             if qs in titles:
                 score -= 2
-            ranked.append((score, len(cat["path"]), cat["path"], cat))
-        ranked.sort(key=lambda item: item[:3])
-        return [item[3] for item in ranked[:limit]]
+            ranked.append(((missed, last_missed), score, len(cat["path"]), cat["path"], cat))
+        ranked.sort(key=lambda item: item[:4])
+        return [item[4] for item in ranked[:limit]]
 
     # Bo'sh qidiruvda ko'rsatiladigan ommabop barg kategoriyalar (sarlavha bo'yicha).
     POPULAR_TITLES = (

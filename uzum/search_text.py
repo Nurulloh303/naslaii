@@ -111,12 +111,34 @@ def _dictionary_hits(token: str) -> set[str]:
     return hits
 
 
+_CYR_ENDINGS = ("ами", "ями", "ого", "его", "ов", "ев", "ей", "ий", "ый", "ой", "ая", "яя", "ые", "ие", "ам", "ям", "ах", "ях", "а", "я", "ы", "и", "е", "о", "у", "ю", "ь", "й")
+_UZ_ENDINGS = ("larining", "laridan", "larini", "lariga", "lari", "lar", "ning", "dagi", "dan", "ga", "si", "ni", "i")
+
+
+def word_stem(word: str) -> str:
+    """Oddiy o'zak: "сумка"/"сумки" → "сумк", "sumkasi"/"sumkalar" → "sumka"."""
+    word = word.strip().lower()
+    if re.search(r"[а-яё]", word):
+        for ending in _CYR_ENDINGS:
+            if word.endswith(ending) and len(word) - len(ending) >= 3:
+                return word[: -len(ending)]
+        return word
+    for ending in _UZ_ENDINGS:
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[: -len(ending)]
+    return word
+
+
 def token_alternatives(token: str) -> set[str]:
     token = token.strip().lower()
     alternatives = {token}
+    stem = word_stem(token)
+    if stem != token:
+        alternatives.add(stem)
     if has_latin(token):
-        alternatives.add(latin_to_cyrillic(token))
-        alternatives.update(_dictionary_hits(token))
+        for word in {token, stem}:
+            alternatives.add(word_stem(latin_to_cyrillic(word)))
+            alternatives.update(_dictionary_hits(word))
     return {a for a in alternatives if a}
 
 
