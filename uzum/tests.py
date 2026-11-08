@@ -282,6 +282,20 @@ class ApiTests(TempStorageMixin, TestCase):
             self.assertIn(expected, fields)
         self.assertTrue(all(e["message"] for e in errors))
 
+    def test_seller_id_auto_and_latin_only(self):
+        from uzum.validation import validate_draft
+
+        draft = base_draft(self.job)
+        draft["skus"][0]["sellerId"] = ""
+        draft["skus"][1]["sellerId"] = ""
+        errors, out = validate_draft(draft, self.user, catalog_mod.get_catalog(TEMPLATE_SHA), check_images=False)
+        ids = [sku["sellerId"] for sku in out["skus"]]
+        self.assertTrue(all(re.fullmatch(r"NS[A-Z0-9]{6}", i) for i in ids), ids)
+        self.assertEqual(len(set(ids)), 2)
+        draft["skus"][0]["sellerId"] = "Сумка 1"
+        ok, fields, _ = self.errors_for(draft)
+        self.assertIn(("sellerId", 0), fields)
+
     def test_price_must_be_multiple_of_1000(self):
         draft = base_draft(self.job)
         draft["skus"][0]["price"] = 125500

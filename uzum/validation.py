@@ -60,6 +60,20 @@ INT_FIELDS = (
 )
 
 
+def auto_seller_id(group_key: str, index: int, taken: set[str]) -> str:
+    """"NS" + 6 ta katta harf/raqam, masalan NS4K7Q2M — Uzum ro'yxatidagi SKU nomlari kabi."""
+    import hashlib
+
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    salt = 0
+    while True:
+        digest = hashlib.sha1(f"{group_key}|{index}|{salt}".encode()).digest()
+        code = "NS" + "".join(alphabet[b % len(alphabet)] for b in digest[:6])
+        if code not in taken:
+            return code
+        salt += 1
+
+
 def price_step() -> int:
     """Uzum: "Значение цены не кратно 1000" — narx va eski narx 1000 so'mga karrali."""
     from django.conf import settings
@@ -339,10 +353,14 @@ def validate_draft(draft, user, catalog: Catalog, *, check_images: bool = True):
         seller_id = clean_text(sku.get("sellerId"), multiline=False)
         if len(seller_id) > SELLER_ID_MAX:
             err("sellerId", f"Sotuvchi ID {SELLER_ID_MAX} belgidan oshmasin", index)
+        elif seller_id and not re.fullmatch(r"[A-Za-z0-9_-]+", seller_id):
+            err("sellerId", "Sotuvchi ID (SKU nomi) faqat lotin harflari, raqamlar, «-» va «_» dan iborat bo'lsin", index)
         elif seller_id:
             if seller_id in seller_ids:
                 err("sellerId", "Sotuvchi ID takrorlangan", index)
             seller_ids.setdefault(seller_id, index)
+        # Bo'sh bo'lsa keyin avtomatik beriladi: Uzum bu ustundan SKU nomini oladi,
+        # bo'sh qolsa import "Not valid Sku Titles from SkuDto" xatosini beradi.
         item["sellerId"] = seller_id
 
         barcode = re.sub(r"\s+", "", str(sku.get("barcode") or ""))
@@ -413,6 +431,14 @@ def validate_draft(draft, user, catalog: Catalog, *, check_images: bool = True):
                 err("size" if size else "color", f"Bu rang/o'lcham {variants_seen[variant] + 1}-SKU bilan bir xil", index)
             variants_seen.setdefault(variant, index)
         out["skus"].append(item)
+
+    # Sotuvchi ID (B ustuni) bo'sh SKU'larga avtomatik SKU nomi: Uzum shu qiymatdan
+    # SKU nomini (skuTitle) yasaydi. Guruhlash kaliti + tartib raqamidan — qayta eksportda o'zgarmaydi.
+    taken = {sku["sellerId"] for sku in out["skus"] if sku.get("sellerId")}
+    for index, sku in enumerate(out["skus"]):
+        if not sku.get("sellerId"):
+            sku["sellerId"] = auto_seller_id(out.get("groupKey") or "", index, taken)
+            taken.add(sku["sellerId"])
 
     # T ustuni va boshqa matnlar Excel katak chegarasidan oshmasin.
     for key, *_ in TEXT_FIELDS:
